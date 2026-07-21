@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { LayoutTemplate, X } from "lucide-react";
+import type { PostgrestError } from "@supabase/supabase-js";
 import type { Task } from "@/lib/taskData";
+import ErrorBanner from "@/components/ErrorBanner";
 
 export type TemplateGroup = {
   name: string;
@@ -18,14 +20,20 @@ export default function TemplatePicker({
   templateGroups: TemplateGroup[];
   targetLabel: string;
   onClose: () => void;
-  onLoad: (group: TemplateGroup) => Promise<void>;
+  onLoad: (group: TemplateGroup) => Promise<PostgrestError | null>;
 }) {
   const [loadingName, setLoadingName] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleLoad(group: TemplateGroup) {
     setLoadingName(group.name);
-    await onLoad(group);
+    setError(null);
+    const err = await onLoad(group);
     setLoadingName(null);
+    if (err) {
+      setError(err.message);
+      return;
+    }
     onClose();
   }
 
@@ -43,6 +51,12 @@ export default function TemplatePicker({
             <X className="h-5 w-5" />
           </button>
         </div>
+
+        {error && (
+          <div className="mb-3">
+            <ErrorBanner message={error} onDismiss={() => setError(null)} />
+          </div>
+        )}
 
         <p className="mb-3 text-sm text-stone-500 dark:text-stone-400">
           המשימות יתווספו אל: <span className="font-medium text-amber-600 dark:text-amber-400">{targetLabel}</span>

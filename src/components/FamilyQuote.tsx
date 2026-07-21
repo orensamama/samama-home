@@ -3,25 +3,35 @@
 import { useState } from "react";
 import { Check, X } from "lucide-react";
 import { useQuote } from "@/lib/useQuote";
+import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
+import ErrorBanner from "@/components/ErrorBanner";
 
 export default function FamilyQuote() {
   const { quote, setQuote } = useQuote();
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(quote);
+  const [error, setError] = useState<string | null>(null);
 
   function startEditing() {
     setDraft(quote);
+    setError(null);
     setIsEditing(true);
   }
 
   async function save() {
-    await setQuote(draft);
+    const err = await setQuote(draft);
+    if (err) {
+      logSupabaseError("שמירת ציטוט משפחתי", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
     setIsEditing(false);
   }
 
   if (isEditing) {
     return (
-      <div className="mt-4 w-full max-w-xs rounded-2xl border border-amber-200 bg-white p-3 shadow-sm dark:border-amber-900/50 dark:bg-stone-900">
+      <div className="mt-4 flex w-full max-w-xs flex-col gap-2 rounded-2xl border border-amber-200 bg-white p-3 shadow-sm dark:border-amber-900/50 dark:bg-stone-900">
+        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
         <textarea
           autoFocus
           value={draft}

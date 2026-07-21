@@ -10,6 +10,7 @@ import {
   type Task,
   type Urgency,
 } from "@/lib/taskData";
+import ErrorBanner from "@/components/ErrorBanner";
 
 export type TaskFormValues = {
   title: string;
@@ -37,11 +38,15 @@ function toFormValues(task: Task | null, defaultAssignee: Assignee): TaskFormVal
 export default function TaskFormModal({
   editingTask,
   defaultAssignee,
+  error,
+  onDismissError,
   onClose,
   onSubmit,
 }: {
   editingTask: Task | null | undefined;
   defaultAssignee: Assignee;
+  error?: string | null;
+  onDismissError: () => void;
   onClose: () => void;
   onSubmit: (values: TaskFormValues) => Promise<void>;
 }) {
@@ -74,6 +79,8 @@ export default function TaskFormModal({
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+          {error && <ErrorBanner message={error} onDismiss={onDismissError} />}
+
           <input
             type="text"
             autoFocus

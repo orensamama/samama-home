@@ -2,12 +2,15 @@
 
 import { useState } from "react";
 import { LayoutTemplate, Plus } from "lucide-react";
+import type { PostgrestError } from "@supabase/supabase-js";
 import PageHeader from "@/components/PageHeader";
 import TaskCard from "@/components/TaskCard";
 import TaskFormModal, { type TaskFormValues } from "@/components/TaskFormModal";
 import TemplatePicker, { type TemplateGroup } from "@/components/TemplatePicker";
+import ErrorBanner from "@/components/ErrorBanner";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
+import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import { sortTasks, type Assignee, type Task } from "@/lib/taskData";
 
 const TABS: { value: Assignee; label: string }[] = [
@@ -22,6 +25,8 @@ export default function TasksPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
 
   const realTasks = allTasks.filter((task) => !task.is_template);
   const tabTasks = sortTasks(
@@ -45,6 +50,7 @@ export default function TasksPage() {
   const activeTabLabel = TABS.find((tab) => tab.value === activeTab)?.label ?? "";
 
   async function handleFormSubmit(values: TaskFormValues) {
+    setFormError(null);
     const payload = {
       title: values.title.trim(),
       assignee: values.assignee,
@@ -55,27 +61,42 @@ export default function TasksPage() {
       is_personal: values.assignee !== "Shared",
     };
 
-    if (editingTask) {
-      await supabase.from("tasks").update(payload).eq("id", editingTask.id);
-    } else {
-      await supabase.from("tasks").insert(payload);
+    const { error } = editingTask
+      ? await supabase.from("tasks").update(payload).eq("id", editingTask.id)
+      : await supabase.from("tasks").insert(payload);
+
+    if (error) {
+      logSupabaseError("שמירת משימה", error);
+      setFormError(friendlyErrorMessage(error));
+      return;
     }
+
     await refetch();
     setShowForm(false);
     setEditingTask(null);
   }
 
   async function handleCycleStatus(task: Task) {
-    await supabase.from("tasks").update({ status: task.status }).eq("id", task.id);
+    const { error } = await supabase.from("tasks").update({ status: task.status }).eq("id", task.id);
+    if (error) {
+      logSupabaseError("עדכון סטטוס משימה", error);
+      setPageError(friendlyErrorMessage(error));
+      return;
+    }
     refetch();
   }
 
   async function handleDelete(id: string) {
-    await supabase.from("tasks").delete().eq("id", id);
+    const { error } = await supabase.from("tasks").delete().eq("id", id);
+    if (error) {
+      logSupabaseError("מחיקת משימה", error);
+      setPageError(friendlyErrorMessage(error));
+      return;
+    }
     refetch();
   }
 
-  async function handleLoadTemplate(group: TemplateGroup) {
+  async function handleLoadTemplate(group: TemplateGroup): Promise<PostgrestError | null> {
     const newRows = group.tasks.map((task) => ({
       title: task.title,
       assignee: activeTab,
@@ -86,8 +107,13 @@ export default function TasksPage() {
       is_personal: activeTab !== "Shared",
       is_template: false,
     }));
-    await supabase.from("tasks").insert(newRows);
+    const { error } = await supabase.from("tasks").insert(newRows);
+    if (error) {
+      logSupabaseError("טעינת תבנית משימות", error);
+      return error;
+    }
     await refetch();
+    return null;
   }
 
   return (
@@ -95,6 +121,8 @@ export default function TasksPage() {
       <PageHeader title="משימות" subtitle="ניהול המשימות המשפחתיות" />
 
       <div className="flex flex-col gap-3 p-4">
+        {pageError && <ErrorBanner message={pageError} onDismiss={() => setPageError(null)} />}
+
         <div className="grid grid-cols-3 gap-1.5 rounded-2xl bg-amber-50 p-1 dark:bg-stone-900">
           {TABS.map((tab) => (
             <button
@@ -117,6 +145,7 @@ export default function TasksPage() {
             type="button"
             onClick={() => {
               setEditingTask(null);
+              setFormError(null);
               setShowForm(true);
             }}
             className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
@@ -148,6 +177,7 @@ export default function TasksPage() {
                 onCycleStatus={handleCycleStatus}
                 onEdit={(t) => {
                   setEditingTask(t);
+                  setFormError(null);
                   setShowForm(true);
                 }}
                 onDelete={handleDelete}
@@ -161,9 +191,12 @@ export default function TasksPage() {
         <TaskFormModal
           editingTask={editingTask}
           defaultAssignee={activeTab === "Other" ? "Shared" : activeTab}
+          error={formError}
+          onDismissError={() => setFormError(null)}
           onClose={() => {
             setShowForm(false);
             setEditingTask(null);
+            setFormError(null);
           }}
           onSubmit={handleFormSubmit}
         />

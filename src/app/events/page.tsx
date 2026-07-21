@@ -3,8 +3,10 @@
 import { useState, type FormEvent } from "react";
 import { CalendarDays, Plus, Trash2 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
+import ErrorBanner from "@/components/ErrorBanner";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
+import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import { formatDate, type FamilyEvent } from "@/lib/familyData";
 
 export default function EventsPage() {
@@ -16,25 +18,37 @@ export default function EventsPage() {
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleAdd(event: FormEvent) {
     event.preventDefault();
     const trimmedTitle = title.trim();
     if (!trimmedTitle || !date || submitting) return;
     setSubmitting(true);
-    const { error } = await supabase
+    setError(null);
+    const { error: err } = await supabase
       .from("events")
       .insert({ title: trimmedTitle, event_date: date });
-    if (!error) {
-      setTitle("");
-      setDate("");
-      await refetch();
+    if (err) {
+      logSupabaseError("הוספת אירוע", err);
+      setError(friendlyErrorMessage(err));
+      setSubmitting(false);
+      return;
     }
+    setTitle("");
+    setDate("");
+    await refetch();
     setSubmitting(false);
   }
 
   async function remove(id: string) {
-    await supabase.from("events").delete().eq("id", id);
+    setError(null);
+    const { error: err } = await supabase.from("events").delete().eq("id", id);
+    if (err) {
+      logSupabaseError("מחיקת אירוע", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
     refetch();
   }
 
@@ -43,6 +57,8 @@ export default function EventsPage() {
       <PageHeader title="תאריכים ואירועים" subtitle="האירועים הקרובים של המשפחה" />
 
       <div className="flex flex-col gap-3 p-4">
+        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
         <form
           onSubmit={handleAdd}
           className="flex flex-col gap-2 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900"

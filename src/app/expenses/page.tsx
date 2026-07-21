@@ -3,8 +3,10 @@
 import { useState, type FormEvent } from "react";
 import { Plus, Trash2, Wallet } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
+import ErrorBanner from "@/components/ErrorBanner";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
+import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import { formatCurrency, formatDate, type ExpenseItem } from "@/lib/familyData";
 
 export default function ExpensesPage() {
@@ -16,6 +18,7 @@ export default function ExpensesPage() {
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const total = expenses.reduce((sum, expense) => sum + Number(expense.amount), 0);
 
@@ -27,19 +30,30 @@ export default function ExpensesPage() {
       return;
     }
     setSubmitting(true);
-    const { error } = await supabase
+    setError(null);
+    const { error: err } = await supabase
       .from("expenses")
       .insert({ title: trimmedTitle, amount: parsedAmount });
-    if (!error) {
-      setTitle("");
-      setAmount("");
-      await refetch();
+    if (err) {
+      logSupabaseError("הוספת הוצאה", err);
+      setError(friendlyErrorMessage(err));
+      setSubmitting(false);
+      return;
     }
+    setTitle("");
+    setAmount("");
+    await refetch();
     setSubmitting(false);
   }
 
   async function remove(id: string) {
-    await supabase.from("expenses").delete().eq("id", id);
+    setError(null);
+    const { error: err } = await supabase.from("expenses").delete().eq("id", id);
+    if (err) {
+      logSupabaseError("מחיקת הוצאה", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
     refetch();
   }
 
@@ -48,6 +62,8 @@ export default function ExpensesPage() {
       <PageHeader title="הוצאות גדולות" subtitle="מעקב אחר ההוצאות המשפחתיות" />
 
       <div className="flex flex-col gap-3 p-4">
+        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
         <form
           onSubmit={handleAdd}
           className="flex flex-col gap-2 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900"

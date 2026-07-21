@@ -4,6 +4,8 @@ import { useState, type FormEvent } from "react";
 import { Check, Plus } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
+import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
+import ErrorBanner from "@/components/ErrorBanner";
 import {
   groupByCategory,
   SHOPPING_CATEGORIES,
@@ -22,6 +24,7 @@ export default function ShoppingArsenal() {
   const [newName, setNewName] = useState("");
   const [newCategory, setNewCategory] = useState<string>(SHOPPING_CATEGORIES[0]);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const grouped = groupByCategory(products);
 
@@ -33,12 +36,18 @@ export default function ShoppingArsenal() {
 
   async function quickAdd(product: MasterProduct) {
     if (isActive(product)) return;
-    await supabase.from("shopping").insert({
+    setError(null);
+    const { error: err } = await supabase.from("shopping").insert({
       product_id: product.id,
       title: product.name,
       category: product.category,
       added_by: "Shared",
     });
+    if (err) {
+      logSupabaseError("הוספת פריט מהארסנל", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
     refetchShopping();
   }
 
@@ -47,18 +56,25 @@ export default function ShoppingArsenal() {
     const trimmed = newName.trim();
     if (!trimmed || submitting) return;
     setSubmitting(true);
-    const { error } = await supabase
+    setError(null);
+    const { error: err } = await supabase
       .from("master_products")
       .insert({ name: trimmed, category: newCategory });
-    if (!error) {
-      setNewName("");
-      await refetchProducts();
+    if (err) {
+      logSupabaseError("הוספת מוצר לארסנל", err);
+      setError(friendlyErrorMessage(err));
+      setSubmitting(false);
+      return;
     }
+    setNewName("");
+    await refetchProducts();
     setSubmitting(false);
   }
 
   return (
     <div className="flex flex-col gap-4">
+      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
       <form
         onSubmit={handleAddProduct}
         className="flex flex-col gap-2 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900"

@@ -4,6 +4,8 @@ import { useState, type FormEvent } from "react";
 import { Check, Plus, Trash2 } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
+import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
+import ErrorBanner from "@/components/ErrorBanner";
 import { groupByCategory, type ShoppingItem } from "@/lib/shoppingData";
 
 export default function LiveShoppingList() {
@@ -13,6 +15,7 @@ export default function LiveShoppingList() {
   });
   const [newTitle, setNewTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const activeItems = items.filter((item) => item.in_cart);
   const pending = activeItems.filter((item) => !item.completed);
@@ -20,7 +23,16 @@ export default function LiveShoppingList() {
   const grouped = groupByCategory(pending);
 
   async function toggleCompleted(item: ShoppingItem) {
-    await supabase.from("shopping").update({ completed: !item.completed }).eq("id", item.id);
+    setError(null);
+    const { error: err } = await supabase
+      .from("shopping")
+      .update({ completed: !item.completed })
+      .eq("id", item.id);
+    if (err) {
+      logSupabaseError("סימון פריט קניות", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
     refetch();
   }
 
@@ -29,28 +41,47 @@ export default function LiveShoppingList() {
     const trimmed = newTitle.trim();
     if (!trimmed || submitting) return;
     setSubmitting(true);
-    const { error } = await supabase.from("shopping").insert({ title: trimmed, added_by: "Shared" });
-    if (!error) {
-      setNewTitle("");
-      await refetch();
+    setError(null);
+    const { error: err } = await supabase.from("shopping").insert({ title: trimmed, added_by: "Shared" });
+    if (err) {
+      logSupabaseError("הוספת פריט קניות", err);
+      setError(friendlyErrorMessage(err));
+      setSubmitting(false);
+      return;
     }
+    setNewTitle("");
+    await refetch();
     setSubmitting(false);
   }
 
   async function remove(id: string) {
-    await supabase.from("shopping").delete().eq("id", id);
+    setError(null);
+    const { error: err } = await supabase.from("shopping").delete().eq("id", id);
+    if (err) {
+      logSupabaseError("מחיקת פריט קניות", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
     refetch();
   }
 
   async function clearCompleted() {
     const ids = completed.map((item) => item.id);
     if (ids.length === 0) return;
-    await supabase.from("shopping").update({ in_cart: false }).in("id", ids);
+    setError(null);
+    const { error: err } = await supabase.from("shopping").update({ in_cart: false }).in("id", ids);
+    if (err) {
+      logSupabaseError("ניקוי פריטים שנקנו", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
     refetch();
   }
 
   return (
     <div className="flex flex-col gap-4">
+      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
       <form onSubmit={handleAdd} className="flex gap-2">
         <input
           type="text"
