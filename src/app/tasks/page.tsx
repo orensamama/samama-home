@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { LayoutTemplate, Plus } from "lucide-react";
+import { Archive, ArrowRight, LayoutTemplate, Plus } from "lucide-react";
 import type { PostgrestError } from "@supabase/supabase-js";
 import PageHeader from "@/components/PageHeader";
 import TaskCard from "@/components/TaskCard";
+import ArchivedTaskCard from "@/components/ArchivedTaskCard";
 import TaskFormModal, { type TaskFormValues } from "@/components/TaskFormModal";
 import TemplatePicker, { type TemplateGroup } from "@/components/TemplatePicker";
 import ErrorBanner from "@/components/ErrorBanner";
@@ -19,9 +20,12 @@ const TABS: { value: Assignee; label: string }[] = [
   { value: "Orit", label: "המשימות של אורית" },
 ];
 
+type View = "active" | "archive";
+
 export default function TasksPage() {
   const { rows: allTasks, refetch } = useSupabaseTable<Task>("tasks");
   const [activeTab, setActiveTab] = useState<Assignee>("Shared");
+  const [view, setView] = useState<View>("active");
   const [showForm, setShowForm] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
@@ -29,11 +33,11 @@ export default function TasksPage() {
   const [pageError, setPageError] = useState<string | null>(null);
 
   const realTasks = allTasks.filter((task) => !task.is_template);
-  const tabTasks = sortTasks(
-    realTasks.filter((task) =>
-      activeTab === "Shared" ? task.assignee === "Shared" || task.assignee === "Other" : task.assignee === activeTab
-    )
+  const tabTasks = realTasks.filter((task) =>
+    activeTab === "Shared" ? task.assignee === "Shared" || task.assignee === "Other" : task.assignee === activeTab
   );
+  const activeTasks = sortTasks(tabTasks.filter((task) => task.status !== "done"));
+  const archivedTasks = tabTasks.filter((task) => task.status === "done");
 
   const templateGroups: TemplateGroup[] = Array.from(
     allTasks
@@ -81,6 +85,26 @@ export default function TasksPage() {
     const { error } = await supabase.from("tasks").update({ status: task.status }).eq("id", task.id);
     if (error) {
       logSupabaseError("עדכון סטטוס משימה", error);
+      setPageError(friendlyErrorMessage(error));
+      return;
+    }
+    refetch();
+  }
+
+  async function handleMarkDone(task: Task) {
+    const { error } = await supabase.from("tasks").update({ status: "done" }).eq("id", task.id);
+    if (error) {
+      logSupabaseError("העברת משימה לארכיון", error);
+      setPageError(friendlyErrorMessage(error));
+      return;
+    }
+    refetch();
+  }
+
+  async function handleRestore(task: Task) {
+    const { error } = await supabase.from("tasks").update({ status: "todo" }).eq("id", task.id);
+    if (error) {
+      logSupabaseError("שחזור משימה", error);
       setPageError(friendlyErrorMessage(error));
       return;
     }
@@ -141,50 +165,92 @@ export default function TasksPage() {
           ))}
         </div>
 
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setEditingTask(null);
-              setFormError(null);
-              setShowForm(true);
-            }}
-            className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
-          >
-            <Plus className="h-4 w-4" />
-            הוספת משימה
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowTemplates(true)}
-            className="flex flex-1 items-center justify-center gap-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-900/50 dark:bg-stone-900 dark:text-amber-400 dark:hover:bg-stone-800"
-          >
-            <LayoutTemplate className="h-4 w-4" />
-            טעינת תבנית
-          </button>
-        </div>
-
-        {tabTasks.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
-            אין משימות כאן עדיין. הוסיפו משימה או טענו תבנית!
-          </div>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {tabTasks.map((task) => (
-              <TaskCard
-                key={task.id}
-                task={task}
-                showAssignee={activeTab === "Shared"}
-                onCycleStatus={handleCycleStatus}
-                onEdit={(t) => {
-                  setEditingTask(t);
+        {view === "active" ? (
+          <>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingTask(null);
                   setFormError(null);
                   setShowForm(true);
                 }}
-                onDelete={handleDelete}
-              />
-            ))}
-          </ul>
+                className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
+              >
+                <Plus className="h-4 w-4" />
+                הוספת משימה
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowTemplates(true)}
+                className="flex flex-1 items-center justify-center gap-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-900/50 dark:bg-stone-900 dark:text-amber-400 dark:hover:bg-stone-800"
+              >
+                <LayoutTemplate className="h-4 w-4" />
+                טעינת תבנית
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setView("archive")}
+              className="flex items-center justify-center gap-1.5 rounded-xl border border-dashed border-stone-300 px-3 py-2 text-sm font-medium text-stone-500 transition-colors hover:bg-stone-50 dark:border-stone-700 dark:text-stone-400 dark:hover:bg-stone-800"
+            >
+              <Archive className="h-4 w-4" />
+              ארכיון ({archivedTasks.length})
+            </button>
+
+            {activeTasks.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
+                אין משימות כאן עדיין. הוסיפו משימה או טענו תבנית!
+              </div>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {activeTasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    showAssignee={activeTab === "Shared"}
+                    onCycleStatus={handleCycleStatus}
+                    onMarkDone={handleMarkDone}
+                    onEdit={(t) => {
+                      setEditingTask(t);
+                      setFormError(null);
+                      setShowForm(true);
+                    }}
+                    onDelete={handleDelete}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => setView("active")}
+              className="flex items-center gap-1.5 text-sm font-medium text-amber-600 hover:underline dark:text-amber-400"
+            >
+              <ArrowRight className="h-4 w-4" />
+              חזרה לרשימה
+            </button>
+
+            {archivedTasks.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-stone-300 p-8 text-center text-sm text-stone-500 dark:border-stone-700 dark:text-stone-400">
+                הארכיון ריק.
+              </div>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {archivedTasks.map((task) => (
+                  <ArchivedTaskCard
+                    key={task.id}
+                    task={task}
+                    onRestore={handleRestore}
+                    onDeleteForever={handleDelete}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </div>
 

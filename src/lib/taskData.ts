@@ -57,7 +57,8 @@ export const STATUS_LEVELS: Record<Status, { label: string; color: string }> = {
   },
 };
 
-export const STATUS_CYCLE: Status[] = ["todo", "in_progress", "done"];
+// "done" is reached exclusively via the archive checkbox, not this cycle.
+export const STATUS_CYCLE: Status[] = ["todo", "in_progress"];
 
 export const CATEGORY_SUGGESTIONS = ["בית", "עבודה", "בריאות", "כספים", "ילדים", "כללי"];
 

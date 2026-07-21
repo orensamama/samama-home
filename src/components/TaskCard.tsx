@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, Pencil, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import {
   ASSIGNEE_OPTIONS,
   STATUS_CYCLE,
@@ -16,12 +16,14 @@ export default function TaskCard({
   task,
   showAssignee,
   onCycleStatus,
+  onMarkDone,
   onEdit,
   onDelete,
 }: {
   task: Task;
   showAssignee: boolean;
   onCycleStatus: (task: Task) => void;
+  onMarkDone: (task: Task) => void;
   onEdit: (task: Task) => void;
   onDelete: (id: string) => void;
 }) {
@@ -85,6 +87,14 @@ export default function TaskCard({
       </div>
 
       <div className="flex items-start gap-3">
+        <button
+          type="button"
+          onClick={() => onMarkDone(task)}
+          aria-label="סמן כבוצע והעבר לארכיון"
+          className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 border-stone-300 text-transparent transition-colors hover:border-emerald-400 hover:text-emerald-500 dark:border-stone-600"
+        >
+          <Check className="h-3.5 w-3.5" />
+        </button>
         {task.image_url && (
           // eslint-disable-next-line @next/next/no-img-element -- user-uploaded, arbitrary Supabase storage URL
           <img
