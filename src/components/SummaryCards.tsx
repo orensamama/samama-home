@@ -3,17 +3,18 @@
 import Link from "next/link";
 import { ListChecks, ShoppingCart } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
-import type { ShoppingItem, TaskItem } from "@/lib/familyData";
+import type { Task } from "@/lib/taskData";
+import type { ShoppingItem } from "@/lib/shoppingData";
 
 export default function SummaryCards() {
-  const { rows: tasks } = useSupabaseTable<TaskItem>("tasks");
+  const { rows: tasks } = useSupabaseTable<Task>("tasks");
   const { rows: shopping } = useSupabaseTable<ShoppingItem>("shopping");
 
   const cards = [
     {
       href: "/tasks",
       label: "משימות להיום",
-      value: tasks.filter((task) => !task.done).length,
+      value: tasks.filter((task) => !task.is_template && task.status !== "done").length,
       icon: ListChecks,
       color: "text-orange-600 dark:text-orange-400",
       bg: "bg-orange-50 dark:bg-orange-950/40",
@@ -21,7 +22,7 @@ export default function SummaryCards() {
     {
       href: "/shopping",
       label: "קניות דחופות",
-      value: shopping.filter((item) => !item.done).length,
+      value: shopping.filter((item) => item.in_cart && !item.completed).length,
       icon: ShoppingCart,
       color: "text-amber-600 dark:text-amber-400",
       bg: "bg-amber-50 dark:bg-amber-950/40",

@@ -1,17 +1,5 @@
 export const DEFAULT_QUOTE = "לך יש אותי, לי יש אותך, לנו יש אותנו";
 
-export type TaskItem = {
-  id: string;
-  title: string;
-  done: boolean;
-};
-
-export type ShoppingItem = {
-  id: string;
-  title: string;
-  done: boolean;
-};
-
 export type FamilyEvent = {
   id: string;
   title: string;

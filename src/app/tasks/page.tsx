@@ -1,13 +1,182 @@
-import ChecklistPage from "@/components/ChecklistPage";
+"use client";
+
+import { useState } from "react";
+import { LayoutTemplate, Plus } from "lucide-react";
+import PageHeader from "@/components/PageHeader";
+import TaskCard from "@/components/TaskCard";
+import TaskFormModal, { type TaskFormValues } from "@/components/TaskFormModal";
+import TemplatePicker, { type TemplateGroup } from "@/components/TemplatePicker";
+import { useSupabaseTable } from "@/lib/useSupabaseTable";
+import { supabase } from "@/lib/supabaseClient";
+import { sortTasks, type Assignee, type Task } from "@/lib/taskData";
+
+const TABS: { value: Assignee; label: string }[] = [
+  { value: "Shared", label: "משותף" },
+  { value: "Oren", label: "המשימות של אורן" },
+  { value: "Orit", label: "המשימות של אורית" },
+];
 
 export default function TasksPage() {
+  const { rows: allTasks, refetch } = useSupabaseTable<Task>("tasks");
+  const [activeTab, setActiveTab] = useState<Assignee>("Shared");
+  const [showForm, setShowForm] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
+
+  const realTasks = allTasks.filter((task) => !task.is_template);
+  const tabTasks = sortTasks(
+    realTasks.filter((task) =>
+      activeTab === "Shared" ? task.assignee === "Shared" || task.assignee === "Other" : task.assignee === activeTab
+    )
+  );
+
+  const templateGroups: TemplateGroup[] = Array.from(
+    allTasks
+      .filter((task) => task.is_template && task.template_name)
+      .reduce((groups, task) => {
+        const key = task.template_name as string;
+        const list = groups.get(key) ?? [];
+        list.push(task);
+        groups.set(key, list);
+        return groups;
+      }, new Map<string, Task[]>())
+  ).map(([name, tasks]) => ({ name, tasks }));
+
+  const activeTabLabel = TABS.find((tab) => tab.value === activeTab)?.label ?? "";
+
+  async function handleFormSubmit(values: TaskFormValues) {
+    const payload = {
+      title: values.title.trim(),
+      assignee: values.assignee,
+      due_date: values.due_date || null,
+      urgency: values.urgency,
+      notes: values.notes.trim() || null,
+      category: values.category.trim() || null,
+      is_personal: values.assignee !== "Shared",
+    };
+
+    if (editingTask) {
+      await supabase.from("tasks").update(payload).eq("id", editingTask.id);
+    } else {
+      await supabase.from("tasks").insert(payload);
+    }
+    await refetch();
+    setShowForm(false);
+    setEditingTask(null);
+  }
+
+  async function handleCycleStatus(task: Task) {
+    await supabase.from("tasks").update({ status: task.status }).eq("id", task.id);
+    refetch();
+  }
+
+  async function handleDelete(id: string) {
+    await supabase.from("tasks").delete().eq("id", id);
+    refetch();
+  }
+
+  async function handleLoadTemplate(group: TemplateGroup) {
+    const newRows = group.tasks.map((task) => ({
+      title: task.title,
+      assignee: activeTab,
+      urgency: task.urgency,
+      status: "todo" as const,
+      notes: task.notes,
+      category: task.category,
+      is_personal: activeTab !== "Shared",
+      is_template: false,
+    }));
+    await supabase.from("tasks").insert(newRows);
+    await refetch();
+  }
+
   return (
-    <ChecklistPage
-      table="tasks"
-      title="משימות"
-      subtitle="ניהול המשימות המשפחתיות"
-      placeholder="משימה חדשה..."
-      emptyText="אין משימות עדיין. הוסיפו את המשימה הראשונה!"
-    />
+    <div className="flex min-h-full flex-col">
+      <PageHeader title="משימות" subtitle="ניהול המשימות המשפחתיות" />
+
+      <div className="flex flex-col gap-3 p-4">
+        <div className="grid grid-cols-3 gap-1.5 rounded-2xl bg-amber-50 p-1 dark:bg-stone-900">
+          {TABS.map((tab) => (
+            <button
+              key={tab.value}
+              type="button"
+              onClick={() => setActiveTab(tab.value)}
+              className={`rounded-xl px-2 py-1.5 text-xs font-medium transition-colors sm:text-sm ${
+                activeTab === tab.value
+                  ? "bg-white text-amber-700 shadow-sm dark:bg-stone-800 dark:text-amber-400"
+                  : "text-stone-500 dark:text-stone-400"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setEditingTask(null);
+              setShowForm(true);
+            }}
+            className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
+          >
+            <Plus className="h-4 w-4" />
+            הוספת משימה
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowTemplates(true)}
+            className="flex flex-1 items-center justify-center gap-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-900/50 dark:bg-stone-900 dark:text-amber-400 dark:hover:bg-stone-800"
+          >
+            <LayoutTemplate className="h-4 w-4" />
+            טעינת תבנית
+          </button>
+        </div>
+
+        {tabTasks.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
+            אין משימות כאן עדיין. הוסיפו משימה או טענו תבנית!
+          </div>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {tabTasks.map((task) => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                showAssignee={activeTab === "Shared"}
+                onCycleStatus={handleCycleStatus}
+                onEdit={(t) => {
+                  setEditingTask(t);
+                  setShowForm(true);
+                }}
+                onDelete={handleDelete}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {showForm && (
+        <TaskFormModal
+          editingTask={editingTask}
+          defaultAssignee={activeTab === "Other" ? "Shared" : activeTab}
+          onClose={() => {
+            setShowForm(false);
+            setEditingTask(null);
+          }}
+          onSubmit={handleFormSubmit}
+        />
+      )}
+
+      {showTemplates && (
+        <TemplatePicker
+          templateGroups={templateGroups}
+          targetLabel={activeTabLabel}
+          onClose={() => setShowTemplates(false)}
+          onLoad={handleLoadTemplate}
+        />
+      )}
+    </div>
   );
 }
