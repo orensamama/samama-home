@@ -2,13 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, ListChecks, ShoppingCart, CalendarClock } from "lucide-react";
+import {
+  LayoutDashboard,
+  ListChecks,
+  ShoppingCart,
+  CalendarDays,
+  Wallet,
+} from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/", label: "דשבורד", icon: LayoutDashboard },
   { href: "/tasks", label: "משימות", icon: ListChecks },
   { href: "/shopping", label: "קניות", icon: ShoppingCart },
-  { href: "/events", label: "תאריכים והוצאות", icon: CalendarClock },
+  { href: "/events", label: "אירועים", icon: CalendarDays },
+  { href: "/expenses", label: "הוצאות", icon: Wallet },
 ];
 
 export default function BottomNav() {
@@ -16,20 +23,20 @@ export default function BottomNav() {
 
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-50 border-t border-zinc-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95"
+      className="fixed inset-x-0 bottom-0 z-50 border-t border-amber-100 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur dark:border-amber-950/40 dark:bg-stone-950/95"
       aria-label="ניווט ראשי"
     >
-      <ul className="grid grid-cols-4">
+      <ul className="grid grid-cols-5">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
           const isActive = href === "/" ? pathname === "/" : pathname.startsWith(href);
           return (
             <li key={href}>
               <Link
                 href={href}
-                className={`flex flex-col items-center gap-1 py-2 text-xs transition-colors ${
+                className={`flex flex-col items-center gap-1 py-2 text-[11px] transition-colors ${
                   isActive
-                    ? "text-teal-600 dark:text-teal-400"
-                    : "text-zinc-500 dark:text-zinc-400"
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-stone-500 dark:text-stone-400"
                 }`}
                 aria-current={isActive ? "page" : undefined}
               >

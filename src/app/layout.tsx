@@ -24,7 +24,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  themeColor: "#0f766e",
+  themeColor: "#d97706",
 };
 
 export default function RootLayout({
@@ -34,7 +34,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="he" dir="rtl" className="h-full">
-      <body className="flex h-full min-h-screen flex-col bg-zinc-50 font-sans text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-50">
+      <body className="flex h-full min-h-screen flex-col bg-[#fdf8f1] font-sans text-stone-900 antialiased dark:bg-[#1c1815] dark:text-stone-50">
         <main className="flex-1 pb-20">{children}</main>
         <BottomNav />
       </body>
