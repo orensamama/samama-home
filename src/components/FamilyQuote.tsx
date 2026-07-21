@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Pencil, Quote as QuoteIcon, X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { useQuote } from "@/lib/useQuote";
 
 export default function FamilyQuote() {
@@ -52,17 +52,13 @@ export default function FamilyQuote() {
   }
 
   return (
-    <div className="mt-4 flex max-w-xs items-center gap-2 rounded-2xl border border-amber-200/70 bg-white/80 px-4 py-2.5 text-sm text-stone-700 shadow-sm dark:border-amber-900/40 dark:bg-stone-900/70 dark:text-stone-200">
-      <QuoteIcon className="h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
-      <span className="italic">{quote}</span>
-      <button
-        type="button"
-        onClick={startEditing}
-        aria-label="עריכת הציטוט המשפחתי"
-        className="shrink-0 rounded-full p-1 text-stone-400 transition-colors hover:bg-amber-100 hover:text-amber-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
-      >
-        <Pencil className="h-3.5 w-3.5" />
-      </button>
-    </div>
+    <button
+      type="button"
+      onClick={startEditing}
+      aria-label="לחצו לעריכת הציטוט המשפחתי"
+      className="mt-4 max-w-xs rounded-2xl border border-amber-200/70 bg-white/80 px-4 py-2.5 text-center text-sm italic text-stone-700 shadow-sm transition-colors hover:border-amber-300 hover:bg-amber-50 dark:border-amber-900/40 dark:bg-stone-900/70 dark:text-stone-200 dark:hover:bg-stone-800/70"
+    >
+      “{quote}”
+    </button>
   );
 }

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { CalendarDays } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
-import { formatEventDate, type FamilyEvent } from "@/lib/familyData";
+import { formatDate, type FamilyEvent } from "@/lib/familyData";
 
 export default function UpcomingEvents() {
   const { rows: events } = useSupabaseTable<FamilyEvent>("events", "id, title, date:event_date", {
@@ -45,7 +45,7 @@ export default function UpcomingEvents() {
                   {event.title}
                 </p>
                 <p className="text-xs text-stone-500 dark:text-stone-400">
-                  {formatEventDate(event.date)}
+                  {formatDate(event.date)}
                 </p>
               </div>
             </li>
