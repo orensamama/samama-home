@@ -14,6 +14,7 @@ export type Task = {
   is_personal: boolean;
   is_template: boolean;
   template_name: string | null;
+  image_url: string | null;
   created_at: string;
 };
 

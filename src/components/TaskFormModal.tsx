@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
-import { X } from "lucide-react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
+import { ImagePlus, X } from "lucide-react";
 import {
   ASSIGNEE_OPTIONS,
   CATEGORY_SUGGESTIONS,
@@ -10,7 +10,10 @@ import {
   type Task,
   type Urgency,
 } from "@/lib/taskData";
+import { supabase } from "@/lib/supabaseClient";
 import ErrorBanner from "@/components/ErrorBanner";
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 export type TaskFormValues = {
   title: string;
@@ -19,11 +22,20 @@ export type TaskFormValues = {
   urgency: Urgency;
   notes: string;
   category: string;
+  image_url: string;
 };
 
 function toFormValues(task: Task | null, defaultAssignee: Assignee): TaskFormValues {
   if (!task) {
-    return { title: "", assignee: defaultAssignee, due_date: "", urgency: "medium", notes: "", category: "" };
+    return {
+      title: "",
+      assignee: defaultAssignee,
+      due_date: "",
+      urgency: "medium",
+      notes: "",
+      category: "",
+      image_url: "",
+    };
   }
   return {
     title: task.title,
@@ -32,6 +44,7 @@ function toFormValues(task: Task | null, defaultAssignee: Assignee): TaskFormVal
     urgency: task.urgency,
     notes: task.notes ?? "",
     category: task.category ?? "",
+    image_url: task.image_url ?? "",
   };
 }
 
@@ -52,6 +65,8 @@ export default function TaskFormModal({
 }) {
   const [values, setValues] = useState<TaskFormValues>(() => toFormValues(editingTask ?? null, defaultAssignee));
   const [submitting, setSubmitting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -59,6 +74,29 @@ export default function TaskFormModal({
     setSubmitting(true);
     await onSubmit(values);
     setSubmitting(false);
+  }
+
+  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > MAX_IMAGE_BYTES) {
+      setUploadError("התמונה גדולה מדי (מקסימום 5MB)");
+      return;
+    }
+    setUploading(true);
+    setUploadError(null);
+    const path = `${crypto.randomUUID()}-${file.name}`;
+    const { error } = await supabase.storage.from("task-images").upload(path, file);
+    if (error) {
+      console.error("[Supabase] העלאת תמונה:", error.message, error);
+      setUploadError("העלאת התמונה נכשלה. ודאו שמיגרציית 0005 הורצה בסופאבייס.");
+      setUploading(false);
+      return;
+    }
+    const { data } = supabase.storage.from("task-images").getPublicUrl(path);
+    setValues((v) => ({ ...v, image_url: data.publicUrl }));
+    setUploading(false);
   }
 
   return (
@@ -165,6 +203,46 @@ export default function TaskFormModal({
                 placeholder="פרטים נוספים..."
                 className="w-full resize-none rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
               />
+            </div>
+
+            <div>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
+                תמונה מצורפת (לא חובה)
+              </p>
+              {values.image_url ? (
+                <div className="relative w-fit">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- user-uploaded, arbitrary Supabase storage URL */}
+                  <img
+                    src={values.image_url}
+                    alt=""
+                    className="h-24 w-24 rounded-xl border border-amber-200 object-cover dark:border-amber-900/50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setValues((v) => ({ ...v, image_url: "" }))}
+                    aria-label="הסרת תמונה"
+                    className="absolute -right-2 -top-2 rounded-full bg-stone-800 p-1 text-white shadow"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ) : (
+                <label className="flex w-fit cursor-pointer items-center gap-2 rounded-xl border border-dashed border-amber-300 px-3 py-2 text-sm text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-stone-800">
+                  <ImagePlus className="h-4 w-4" />
+                  {uploading ? "מעלה תמונה..." : "צירוף תמונה"}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    disabled={uploading}
+                    onChange={handleFileChange}
+                  />
+                </label>
+              )}
+              {uploadError && (
+                <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{uploadError}</p>
+              )}
             </div>
           </div>
 

@@ -84,26 +84,36 @@ export default function TaskCard({
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => hasDetails && setExpanded((value) => !value)}
-        className={`flex items-center justify-between gap-2 text-right ${hasDetails ? "cursor-pointer" : "cursor-default"}`}
-      >
-        <span
-          className={`text-sm font-medium ${
-            task.status === "done"
-              ? "text-stone-400 line-through dark:text-stone-500"
-              : "text-stone-800 dark:text-stone-100"
-          }`}
-        >
-          {task.title}
-        </span>
-        {hasDetails && (
-          <ChevronDown
-            className={`h-4 w-4 shrink-0 text-stone-400 transition-transform ${expanded ? "rotate-180" : ""}`}
+      <div className="flex items-start gap-3">
+        {task.image_url && (
+          // eslint-disable-next-line @next/next/no-img-element -- user-uploaded, arbitrary Supabase storage URL
+          <img
+            src={task.image_url}
+            alt=""
+            className="h-14 w-14 shrink-0 rounded-lg border border-amber-100 object-cover dark:border-amber-950/30"
           />
         )}
-      </button>
+        <button
+          type="button"
+          onClick={() => hasDetails && setExpanded((value) => !value)}
+          className={`flex flex-1 items-center justify-between gap-2 text-right ${hasDetails ? "cursor-pointer" : "cursor-default"}`}
+        >
+          <span
+            className={`text-sm font-medium ${
+              task.status === "done"
+                ? "text-stone-400 line-through dark:text-stone-500"
+                : "text-stone-800 dark:text-stone-100"
+            }`}
+          >
+            {task.title}
+          </span>
+          {hasDetails && (
+            <ChevronDown
+              className={`h-4 w-4 shrink-0 text-stone-400 transition-transform ${expanded ? "rotate-180" : ""}`}
+            />
+          )}
+        </button>
+      </div>
 
       {expanded && hasDetails && (
         <div className="flex flex-col gap-1 rounded-xl bg-amber-50/60 p-2.5 text-xs text-stone-600 dark:bg-stone-950/40 dark:text-stone-300">

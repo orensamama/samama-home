@@ -58,6 +58,7 @@ export default function TasksPage() {
       urgency: values.urgency,
       notes: values.notes.trim() || null,
       category: values.category.trim() || null,
+      image_url: values.image_url || null,
       is_personal: values.assignee !== "Shared",
     };
 
