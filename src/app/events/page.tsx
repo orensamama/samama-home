@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { CalendarDays, Plus, Trash2 } from "lucide-react";
+import { CalendarDays, MapPin, Plus, Trash2 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import ErrorBanner from "@/components/ErrorBanner";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
@@ -12,11 +12,13 @@ import { formatDate, type FamilyEvent } from "@/lib/familyData";
 export default function EventsPage() {
   const { rows: events, refetch } = useSupabaseTable<FamilyEvent>(
     "events",
-    "id, title, date:event_date",
+    "id, title, date:event_date, location, notes",
     { column: "event_date", ascending: true }
   );
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
+  const [location, setLocation] = useState("");
+  const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,9 +28,12 @@ export default function EventsPage() {
     if (!trimmedTitle || !date || submitting) return;
     setSubmitting(true);
     setError(null);
-    const { error: err } = await supabase
-      .from("events")
-      .insert({ title: trimmedTitle, event_date: date });
+    const { error: err } = await supabase.from("events").insert({
+      title: trimmedTitle,
+      event_date: date,
+      location: location.trim() || null,
+      notes: notes.trim() || null,
+    });
     if (err) {
       logSupabaseError("הוספת אירוע", err);
       setError(friendlyErrorMessage(err));
@@ -37,6 +42,8 @@ export default function EventsPage() {
     }
     setTitle("");
     setDate("");
+    setLocation("");
+    setNotes("");
     await refetch();
     setSubmitting(false);
   }
@@ -70,22 +77,36 @@ export default function EventsPage() {
             placeholder="שם האירוע..."
             className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
           />
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <input
               type="date"
               value={date}
               onChange={(event) => setDate(event.target.value)}
               className="flex-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
             />
-            <button
-              type="submit"
-              disabled={!title.trim() || !date || submitting}
-              className="flex shrink-0 items-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
-            >
-              <Plus className="h-4 w-4" />
-              הוספה
-            </button>
+            <input
+              type="text"
+              value={location}
+              onChange={(event) => setLocation(event.target.value)}
+              placeholder="מיקום (לא חובה)"
+              className="flex-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
+            />
           </div>
+          <textarea
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            rows={2}
+            placeholder="הערות / פרטים נוספים (לא חובה)"
+            className="resize-none rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
+          />
+          <button
+            type="submit"
+            disabled={!title.trim() || !date || submitting}
+            className="flex items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+          >
+            <Plus className="h-4 w-4" />
+            הוספה
+          </button>
         </form>
 
         {events.length === 0 ? (
@@ -97,7 +118,7 @@ export default function EventsPage() {
             {events.map((event) => (
               <li
                 key={event.id}
-                className="flex items-center gap-3 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900"
+                className="flex items-start gap-3 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900"
               >
                 <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/50 dark:text-amber-400">
                   <CalendarDays className="h-5 w-5" />
@@ -106,9 +127,18 @@ export default function EventsPage() {
                   <p className="truncate text-sm font-medium text-stone-800 dark:text-stone-100">
                     {event.title}
                   </p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400">
-                    {formatDate(event.date)}
-                  </p>
+                  <p className="text-xs text-stone-500 dark:text-stone-400">{formatDate(event.date)}</p>
+                  {event.location && (
+                    <p className="mt-1 flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
+                      <MapPin className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{event.location}</span>
+                    </p>
+                  )}
+                  {event.notes && (
+                    <p className="mt-1 whitespace-pre-wrap text-xs text-stone-500 dark:text-stone-400">
+                      {event.notes}
+                    </p>
+                  )}
                 </div>
                 <button
                   type="button"

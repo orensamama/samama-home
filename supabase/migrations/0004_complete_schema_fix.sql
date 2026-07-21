@@ -12,6 +12,10 @@
 -- one. It's safe to run even if some of the old migrations partially
 -- applied, since every table below is dropped and recreated from
 -- scratch (all are currently empty stubs, so there's nothing to lose).
+--
+-- Also includes optional `location`/`notes` columns on `events` (added
+-- after this file was first written, but since it had never been run
+-- yet there was no reason to fragment this into a separate migration).
 
 create extension if not exists pgcrypto;
 
@@ -142,6 +146,8 @@ create table public.events (
   id uuid primary key default gen_random_uuid(),
   title text not null,
   event_date date not null,
+  location text,
+  notes text,
   created_at timestamptz not null default now()
 );
 

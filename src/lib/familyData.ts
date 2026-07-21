@@ -4,6 +4,8 @@ export type FamilyEvent = {
   id: string;
   title: string;
   date: string; // ISO date, e.g. "2026-07-24"
+  location: string | null;
+  notes: string | null;
 };
 
 export type ExpenseItem = {
