@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { ListChecks, ShoppingCart } from "lucide-react";
-import { useLocalStorage } from "@/lib/useLocalStorage";
-import { DEFAULT_SHOPPING, DEFAULT_TASKS, type ShoppingItem, type TaskItem } from "@/lib/familyData";
+import { useSupabaseTable } from "@/lib/useSupabaseTable";
+import type { ShoppingItem, TaskItem } from "@/lib/familyData";
 
 export default function SummaryCards() {
-  const [tasks] = useLocalStorage<TaskItem[]>("samama-tasks", DEFAULT_TASKS);
-  const [shopping] = useLocalStorage<ShoppingItem[]>("samama-shopping", DEFAULT_SHOPPING);
+  const { rows: tasks } = useSupabaseTable<TaskItem>("tasks");
+  const { rows: shopping } = useSupabaseTable<ShoppingItem>("shopping");
 
   const cards = [
     {

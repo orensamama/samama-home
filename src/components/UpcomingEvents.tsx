@@ -2,12 +2,15 @@
 
 import Link from "next/link";
 import { CalendarDays } from "lucide-react";
-import { useLocalStorage } from "@/lib/useLocalStorage";
-import { DEFAULT_EVENTS, formatEventDate, type FamilyEvent } from "@/lib/familyData";
+import { useSupabaseTable } from "@/lib/useSupabaseTable";
+import { formatEventDate, type FamilyEvent } from "@/lib/familyData";
 
 export default function UpcomingEvents() {
-  const [events] = useLocalStorage<FamilyEvent[]>("samama-events", DEFAULT_EVENTS);
-  const upcoming = [...events].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 3);
+  const { rows: events } = useSupabaseTable<FamilyEvent>("events", "id, title, date:event_date", {
+    column: "event_date",
+    ascending: true,
+  });
+  const upcoming = events.slice(0, 3);
 
   return (
     <section className="flex flex-col gap-3">

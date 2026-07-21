@@ -2,12 +2,15 @@
 
 import { CalendarDays } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
-import { useLocalStorage } from "@/lib/useLocalStorage";
-import { DEFAULT_EVENTS, formatEventDate, type FamilyEvent } from "@/lib/familyData";
+import { useSupabaseTable } from "@/lib/useSupabaseTable";
+import { formatEventDate, type FamilyEvent } from "@/lib/familyData";
 
 export default function EventsPage() {
-  const [events] = useLocalStorage<FamilyEvent[]>("samama-events", DEFAULT_EVENTS);
-  const sorted = [...events].sort((a, b) => a.date.localeCompare(b.date));
+  const { rows: sorted } = useSupabaseTable<FamilyEvent>(
+    "events",
+    "id, title, date:event_date",
+    { column: "event_date", ascending: true }
+  );
 
   return (
     <div className="flex min-h-full flex-col">

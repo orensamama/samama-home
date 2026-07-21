@@ -2,11 +2,10 @@
 
 import { useState } from "react";
 import { Check, Pencil, Quote as QuoteIcon, X } from "lucide-react";
-import { useLocalStorage } from "@/lib/useLocalStorage";
-import { DEFAULT_QUOTE } from "@/lib/familyData";
+import { useQuote } from "@/lib/useQuote";
 
 export default function FamilyQuote() {
-  const [quote, setQuote] = useLocalStorage<string>("samama-quote", DEFAULT_QUOTE);
+  const { quote, setQuote } = useQuote();
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(quote);
 
@@ -15,9 +14,8 @@ export default function FamilyQuote() {
     setIsEditing(true);
   }
 
-  function save() {
-    const trimmed = draft.trim();
-    setQuote(trimmed.length > 0 ? trimmed : DEFAULT_QUOTE);
+  async function save() {
+    await setQuote(draft);
     setIsEditing(false);
   }
 
