@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { Check, Plus } from "lucide-react";
+import { Check, Pencil, Plus, Trash2 } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
@@ -25,6 +25,8 @@ export default function ShoppingArsenal() {
   const [newCategory, setNewCategory] = useState<string>(SHOPPING_CATEGORIES[0]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [renamingCategory, setRenamingCategory] = useState<string | null>(null);
 
   const grouped = groupByCategory(products);
 
@@ -83,9 +85,72 @@ export default function ShoppingArsenal() {
     setSubmitting(false);
   }
 
+  async function handleRenameProduct(product: MasterProduct, newNameRaw: string) {
+    const trimmed = newNameRaw.trim();
+    if (!trimmed || trimmed === product.name) return;
+    setError(null);
+    const { error: err } = await supabase
+      .from("master_products")
+      .update({ name: trimmed })
+      .eq("id", product.id);
+    if (err) {
+      logSupabaseError("עדכון שם מוצר", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
+    refetchProducts();
+  }
+
+  async function handleDeleteProduct(id: string) {
+    setError(null);
+    const { error: err } = await supabase.from("master_products").delete().eq("id", id);
+    if (err) {
+      logSupabaseError("מחיקת מוצר מהארסנל", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
+    refetchProducts();
+  }
+
+  async function handleRenameCategory(oldName: string, newNameRaw: string) {
+    const newName = newNameRaw.trim();
+    setRenamingCategory(null);
+    if (!newName || newName === oldName) return;
+    setError(null);
+    const { error: err } = await supabase
+      .from("master_products")
+      .update({ category: newName })
+      .eq("category", oldName);
+    if (err) {
+      logSupabaseError("שינוי שם קטגוריה", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
+    refetchProducts();
+  }
+
   return (
     <div className="flex flex-col gap-4">
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-bold text-stone-700 dark:text-stone-200">ארסנל מוצרים</p>
+        <button
+          type="button"
+          onClick={() => {
+            setEditMode((value) => !value);
+            setRenamingCategory(null);
+          }}
+          className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
+            editMode
+              ? "bg-amber-500 text-white hover:bg-amber-600"
+              : "border border-amber-200 text-amber-700 hover:bg-amber-50 dark:border-amber-900/50 dark:text-amber-400 dark:hover:bg-stone-800"
+          }`}
+        >
+          {editMode ? <Check className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
+          {editMode ? "סיום" : "עריכה"}
+        </button>
+      </div>
 
       <form
         onSubmit={handleAddProduct}
@@ -129,31 +194,86 @@ export default function ShoppingArsenal() {
       ) : (
         grouped.map(({ category, items }) => (
           <div key={category} className="flex flex-col gap-2">
-            <h3 className="text-sm font-bold text-stone-700 dark:text-stone-200">{category}</h3>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {items.map((product) => {
-                const active = Boolean(getActiveItem(product));
-                return (
-                  <button
-                    key={product.id}
-                    type="button"
-                    onClick={() => toggleProduct(product)}
-                    className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm transition-colors ${
-                      active
-                        ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-400"
-                        : "border-amber-100 bg-white text-stone-700 hover:bg-amber-50 dark:border-amber-950/30 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
-                    }`}
-                  >
-                    <span className="truncate">{product.name}</span>
-                    {active ? (
-                      <Check className="h-4 w-4 shrink-0" />
-                    ) : (
-                      <Plus className="h-4 w-4 shrink-0 text-amber-500" />
-                    )}
-                  </button>
-                );
-              })}
+            <div className="flex items-center justify-between gap-2">
+              {renamingCategory === category ? (
+                <input
+                  type="text"
+                  defaultValue={category}
+                  autoFocus
+                  onBlur={(event) => handleRenameCategory(category, event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                  className="min-w-0 flex-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-sm font-bold text-stone-700 outline-none dark:bg-stone-950 dark:text-stone-200"
+                />
+              ) : (
+                <h3 className="text-sm font-bold text-stone-700 dark:text-stone-200">{category}</h3>
+              )}
+              {editMode && renamingCategory !== category && (
+                <button
+                  type="button"
+                  onClick={() => setRenamingCategory(category)}
+                  aria-label="שינוי שם קטגוריה"
+                  className="shrink-0 rounded-full p-1 text-stone-400 hover:bg-amber-100 hover:text-amber-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
+
+            {editMode ? (
+              <div className="flex flex-col gap-1.5">
+                {items.map((product) => (
+                  <div
+                    key={product.id}
+                    className="flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 dark:border-stone-700 dark:bg-stone-900"
+                  >
+                    <input
+                      type="text"
+                      defaultValue={product.name}
+                      onBlur={(event) => handleRenameProduct(product, event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                      }}
+                      className="min-w-0 flex-1 bg-transparent text-sm text-stone-700 outline-none dark:text-stone-200"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteProduct(product.id)}
+                      aria-label="מחיקת מוצר"
+                      className="shrink-0 rounded-full p-1 text-stone-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {items.map((product) => {
+                  const active = Boolean(getActiveItem(product));
+                  return (
+                    <button
+                      key={product.id}
+                      type="button"
+                      onClick={() => toggleProduct(product)}
+                      className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm transition-colors ${
+                        active
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-400"
+                          : "border-amber-100 bg-white text-stone-700 hover:bg-amber-50 dark:border-amber-950/30 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
+                      }`}
+                    >
+                      <span className="truncate">{product.name}</span>
+                      {active ? (
+                        <Check className="h-4 w-4 shrink-0" />
+                      ) : (
+                        <Plus className="h-4 w-4 shrink-0 text-amber-500" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ))
       )}

@@ -1,96 +1,79 @@
 "use client";
 
-import { useState, type ChangeEvent, type FormEvent } from "react";
-import { CalendarDays, ImagePlus, MapPin, Plus, Trash2, X } from "lucide-react";
+import { useState } from "react";
+import { Calendar, CalendarDays, Check, Copy, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import ErrorBanner from "@/components/ErrorBanner";
 import WeeklyCalendar from "@/components/WeeklyCalendar";
+import EventFormModal, { type EventFormValues } from "@/components/EventFormModal";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
-import { formatDate, type FamilyEvent } from "@/lib/familyData";
-
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+import { buildGoogleCalendarUrl, formatDate, formatTime, type FamilyEvent } from "@/lib/familyData";
 
 type View = "list" | "calendar";
 
 export default function EventsPage() {
   const { rows: events, refetch } = useSupabaseTable<FamilyEvent>(
     "events",
-    "id, title, date:event_date, location, notes, image_url",
+    "id, title, date:event_date, time, location, notes, image_url",
     { column: "event_date", ascending: true }
   );
   const [view, setView] = useState<View>("list");
-  const [title, setTitle] = useState("");
-  const [date, setDate] = useState("");
-  const [location, setLocation] = useState("");
-  const [notes, setNotes] = useState("");
-  const [imageUrl, setImageUrl] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<FamilyEvent | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
+  const [icalUrl] = useState(() =>
+    typeof window === "undefined" ? "" : `${window.location.origin}/api/calendar/ical`
+  );
+  const [copied, setCopied] = useState(false);
 
-  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (file.size > MAX_IMAGE_BYTES) {
-      setUploadError("התמונה גדולה מדי (מקסימום 5MB)");
-      return;
-    }
-    setUploading(true);
-    setUploadError(null);
-    const path = `${crypto.randomUUID()}-${file.name}`;
-    const { error: err } = await supabase.storage.from("event-images").upload(path, file);
-    if (err) {
-      console.error("[Supabase] העלאת תמונה לאירוע:", err.message, err);
-      setUploadError("העלאת התמונה נכשלה. ודאו שמיגרציית 0006 הורצה בסופאבייס.");
-      setUploading(false);
-      return;
-    }
-    const { data } = supabase.storage.from("event-images").getPublicUrl(path);
-    setImageUrl(data.publicUrl);
-    setUploading(false);
-  }
+  async function handleFormSubmit(values: EventFormValues) {
+    setFormError(null);
+    const payload = {
+      title: values.title.trim(),
+      event_date: values.date,
+      time: values.time || null,
+      location: values.location.trim() || null,
+      notes: values.notes.trim() || null,
+      image_url: values.image_url || null,
+    };
 
-  async function handleAdd(event: FormEvent) {
-    event.preventDefault();
-    const trimmedTitle = title.trim();
-    if (!trimmedTitle || !date || submitting) return;
-    setSubmitting(true);
-    setError(null);
-    const { error: err } = await supabase.from("events").insert({
-      title: trimmedTitle,
-      event_date: date,
-      location: location.trim() || null,
-      notes: notes.trim() || null,
-      image_url: imageUrl || null,
-    });
-    if (err) {
-      logSupabaseError("הוספת אירוע", err);
-      setError(friendlyErrorMessage(err));
-      setSubmitting(false);
+    const { error } = editingEvent
+      ? await supabase.from("events").update(payload).eq("id", editingEvent.id)
+      : await supabase.from("events").insert(payload);
+
+    if (error) {
+      logSupabaseError("שמירת אירוע", error);
+      setFormError(friendlyErrorMessage(error));
       return;
     }
-    setTitle("");
-    setDate("");
-    setLocation("");
-    setNotes("");
-    setImageUrl("");
+
     await refetch();
-    setSubmitting(false);
+    setShowForm(false);
+    setEditingEvent(null);
   }
 
   async function remove(id: string) {
-    setError(null);
+    setPageError(null);
     const { error: err } = await supabase.from("events").delete().eq("id", id);
     if (err) {
       logSupabaseError("מחיקת אירוע", err);
-      setError(friendlyErrorMessage(err));
+      setPageError(friendlyErrorMessage(err));
       return;
     }
     refetch();
+  }
+
+  async function copyIcalUrl() {
+    try {
+      await navigator.clipboard.writeText(icalUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API unavailable -- the URL is still visible to copy manually.
+    }
   }
 
   return (
@@ -123,92 +106,50 @@ export default function EventsPage() {
           </button>
         </div>
 
-        {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+        {pageError && <ErrorBanner message={pageError} onDismiss={() => setPageError(null)} />}
+
+        <div className="rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900">
+          <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-stone-700 dark:text-stone-200">
+            📅 סנכרן ל-Google Calendar
+          </p>
+          <p className="mb-2 text-xs text-stone-500 dark:text-stone-400">
+            העתיקו את הקישור, ואז ב-Google Calendar: הגדרות ← הוספת יומן ← מכתובת URL ← הדביקו.
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              readOnly
+              value={icalUrl}
+              className="min-w-0 flex-1 truncate rounded-lg border border-stone-200 bg-stone-50 px-2 py-1.5 text-xs text-stone-500 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-400"
+            />
+            <button
+              type="button"
+              onClick={copyIcalUrl}
+              disabled={!icalUrl}
+              className="flex shrink-0 items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? "הועתק!" : "העתקה"}
+            </button>
+          </div>
+        </div>
 
         {view === "calendar" ? (
           <WeeklyCalendar events={events} />
         ) : (
           <>
-            <form
-              onSubmit={handleAdd}
-              className="flex flex-col gap-2 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900"
+            <button
+              type="button"
+              onClick={() => {
+                setEditingEvent(null);
+                setFormError(null);
+                setShowForm(true);
+              }}
+              className="flex items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
             >
-              <input
-                type="text"
-                value={title}
-                onChange={(event) => setTitle(event.target.value)}
-                placeholder="שם האירוע..."
-                className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
-              />
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <input
-                  type="date"
-                  value={date}
-                  onChange={(event) => setDate(event.target.value)}
-                  className="flex-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
-                />
-                <input
-                  type="text"
-                  value={location}
-                  onChange={(event) => setLocation(event.target.value)}
-                  placeholder="מיקום (לא חובה)"
-                  className="flex-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
-                />
-              </div>
-              <textarea
-                value={notes}
-                onChange={(event) => setNotes(event.target.value)}
-                rows={2}
-                placeholder="הערות / פרטים נוספים (לא חובה)"
-                className="resize-none rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
-              />
-
-              <div>
-                {imageUrl ? (
-                  <div className="relative w-fit">
-                    {/* eslint-disable-next-line @next/next/no-img-element -- user-uploaded, arbitrary Supabase storage URL */}
-                    <img
-                      src={imageUrl}
-                      alt=""
-                      className="h-20 w-20 rounded-xl border border-amber-200 object-cover dark:border-amber-900/50"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setImageUrl("")}
-                      aria-label="הסרת תמונה"
-                      className="absolute -right-2 -top-2 rounded-full bg-stone-800 p-1 text-white shadow"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ) : (
-                  <label className="flex w-fit cursor-pointer items-center gap-2 rounded-xl border border-dashed border-amber-300 px-3 py-2 text-sm text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-stone-800">
-                    <ImagePlus className="h-4 w-4" />
-                    {uploading ? "מעלה תמונה..." : "צירוף תמונה (לא חובה)"}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      className="hidden"
-                      disabled={uploading}
-                      onChange={handleFileChange}
-                    />
-                  </label>
-                )}
-                {uploadError && (
-                  <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{uploadError}</p>
-                )}
-              </div>
-
-              <button
-                type="submit"
-                disabled={!title.trim() || !date || submitting}
-                className="flex items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
-              >
-                <Plus className="h-4 w-4" />
-                הוספה
-              </button>
-            </form>
+              <Plus className="h-4 w-4" />
+              הוספת אירוע
+            </button>
 
             {events.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
@@ -237,7 +178,10 @@ export default function EventsPage() {
                       <p className="truncate text-sm font-medium text-stone-800 dark:text-stone-100">
                         {event.title}
                       </p>
-                      <p className="text-xs text-stone-500 dark:text-stone-400">{formatDate(event.date)}</p>
+                      <p className="text-xs text-stone-500 dark:text-stone-400">
+                        {formatDate(event.date)}
+                        {event.time && ` • ${formatTime(event.time)}`}
+                      </p>
                       {event.location && (
                         <p className="mt-1 flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
                           <MapPin className="h-3 w-3 shrink-0" />
@@ -249,15 +193,38 @@ export default function EventsPage() {
                           {event.notes}
                         </p>
                       )}
+                      <a
+                        href={buildGoogleCalendarUrl(event)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-amber-600 hover:underline dark:text-amber-400"
+                      >
+                        <Calendar className="h-3 w-3" />
+                        הוסף ליומן
+                      </a>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => remove(event.id)}
-                      aria-label="מחיקה"
-                      className="shrink-0 rounded-full p-1.5 text-stone-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    <div className="flex shrink-0 flex-col gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingEvent(event);
+                          setFormError(null);
+                          setShowForm(true);
+                        }}
+                        aria-label="עריכת אירוע"
+                        className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-amber-100 hover:text-amber-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => remove(event.id)}
+                        aria-label="מחיקה"
+                        className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -265,6 +232,20 @@ export default function EventsPage() {
           </>
         )}
       </div>
+
+      {showForm && (
+        <EventFormModal
+          editingEvent={editingEvent}
+          error={formError}
+          onDismissError={() => setFormError(null)}
+          onClose={() => {
+            setShowForm(false);
+            setEditingEvent(null);
+            setFormError(null);
+          }}
+          onSubmit={handleFormSubmit}
+        />
+      )}
     </div>
   );
 }

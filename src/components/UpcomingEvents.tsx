@@ -1,16 +1,48 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { CalendarDays } from "lucide-react";
+import { CalendarDays, Pencil } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
-import { formatDate, type FamilyEvent } from "@/lib/familyData";
+import { supabase } from "@/lib/supabaseClient";
+import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
+import { formatDate, formatTime, type FamilyEvent } from "@/lib/familyData";
+import EventFormModal, { type EventFormValues } from "@/components/EventFormModal";
 
 export default function UpcomingEvents() {
-  const { rows: events } = useSupabaseTable<FamilyEvent>("events", "id, title, date:event_date", {
-    column: "event_date",
-    ascending: true,
-  });
+  const { rows: events, refetch } = useSupabaseTable<FamilyEvent>(
+    "events",
+    "id, title, date:event_date, time, location, notes, image_url",
+    { column: "event_date", ascending: true }
+  );
+  const [editingEvent, setEditingEvent] = useState<FamilyEvent | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const upcoming = events.slice(0, 3);
+
+  async function handleFormSubmit(values: EventFormValues) {
+    if (!editingEvent) return;
+    setFormError(null);
+    const { error } = await supabase
+      .from("events")
+      .update({
+        title: values.title.trim(),
+        event_date: values.date,
+        time: values.time || null,
+        location: values.location.trim() || null,
+        notes: values.notes.trim() || null,
+        image_url: values.image_url || null,
+      })
+      .eq("id", editingEvent.id);
+
+    if (error) {
+      logSupabaseError("עדכון אירוע", error);
+      setFormError(friendlyErrorMessage(error));
+      return;
+    }
+
+    await refetch();
+    setEditingEvent(null);
+  }
 
   return (
     <section className="flex flex-col gap-3">
@@ -46,11 +78,36 @@ export default function UpcomingEvents() {
                 </p>
                 <p className="text-xs text-stone-500 dark:text-stone-400">
                   {formatDate(event.date)}
+                  {event.time && ` • ${formatTime(event.time)}`}
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingEvent(event);
+                  setFormError(null);
+                }}
+                aria-label="עריכת אירוע"
+                className="shrink-0 rounded-full p-1.5 text-stone-400 transition-colors hover:bg-amber-100 hover:text-amber-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
+              >
+                <Pencil className="h-4 w-4" />
+              </button>
             </li>
           ))}
         </ul>
+      )}
+
+      {editingEvent && (
+        <EventFormModal
+          editingEvent={editingEvent}
+          error={formError}
+          onDismissError={() => setFormError(null)}
+          onClose={() => {
+            setEditingEvent(null);
+            setFormError(null);
+          }}
+          onSubmit={handleFormSubmit}
+        />
       )}
     </section>
   );

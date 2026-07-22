@@ -1,11 +1,15 @@
 export type Assignee = "Oren" | "Orit" | "Hadar" | "Ziv" | "Shared" | "Other";
 export type Urgency = "low" | "medium" | "high";
 export type Status = "todo" | "in_progress" | "done";
+// Who a task is ABOUT/FOR, separate from `assignee` (who's responsible for
+// doing it). `null` means "general" -- not about any specific family member.
+export type ForMember = "Oren" | "Orit" | "Hadar" | "Ziv" | null;
 
 export type Task = {
   id: string;
   title: string;
   assignee: Assignee;
+  for_member: ForMember;
   due_date: string | null;
   urgency: Urgency;
   status: Status;
@@ -57,6 +61,16 @@ export const ASSIGNEE_TAGS: Record<Assignee, { label: string; color: string }> =
   },
 };
 
+// "עבור / קשור ל-" selector options -- `null` is "כללי" (general, no
+// specific family member).
+export const FOR_MEMBER_OPTIONS: { value: ForMember; label: string }[] = [
+  { value: null, label: "כללי" },
+  { value: "Oren", label: "אורן" },
+  { value: "Orit", label: "אורית" },
+  { value: "Hadar", label: "הדר" },
+  { value: "Ziv", label: "זיו" },
+];
+
 export const URGENCY_LEVELS: Record<Urgency, { label: string; color: string; dot: string }> = {
   low: {
     label: "נמוכה",
@@ -106,6 +120,14 @@ export function isOverdue(dateStr: string, status: Status) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return new Date(dateStr) < today;
+}
+
+export function isDueToday(dateStr: string) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const due = new Date(dateStr);
+  due.setHours(0, 0, 0, 0);
+  return due.getTime() === today.getTime();
 }
 
 const STATUS_ORDER: Record<Status, number> = { todo: 0, in_progress: 0, done: 1 };

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { ListChecks, ShoppingCart } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
-import type { Task } from "@/lib/taskData";
+import { isDueToday, type Task } from "@/lib/taskData";
 import type { ShoppingItem } from "@/lib/shoppingData";
 
 export default function SummaryCards() {
@@ -13,15 +13,21 @@ export default function SummaryCards() {
   const cards = [
     {
       href: "/tasks",
-      label: "משימות להיום",
-      value: tasks.filter((task) => !task.is_template && task.status !== "done").length,
+      label: "משימות בדחיפות גבוהה",
+      value: tasks.filter(
+        (task) =>
+          !task.is_template &&
+          !task.archived &&
+          task.status !== "done" &&
+          (task.urgency === "high" || (task.due_date && isDueToday(task.due_date)))
+      ).length,
       icon: ListChecks,
       color: "text-orange-600 dark:text-orange-400",
       bg: "bg-orange-50 dark:bg-orange-950/40",
     },
     {
       href: "/shopping",
-      label: "קניות דחופות",
+      label: "מוצרים חסרים ברשימה",
       value: shopping.filter((item) => item.in_cart && !item.completed).length,
       icon: ShoppingCart,
       color: "text-amber-600 dark:text-amber-400",

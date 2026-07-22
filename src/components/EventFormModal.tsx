@@ -2,80 +2,56 @@
 
 import { useState, type ChangeEvent, type FormEvent } from "react";
 import { ImagePlus, X } from "lucide-react";
-import {
-  ASSIGNEE_OPTIONS,
-  CATEGORY_SUGGESTIONS,
-  FOR_MEMBER_OPTIONS,
-  URGENCY_LEVELS,
-  type Assignee,
-  type ForMember,
-  type Task,
-  type Urgency,
-} from "@/lib/taskData";
 import { supabase } from "@/lib/supabaseClient";
+import type { FamilyEvent } from "@/lib/familyData";
 import ErrorBanner from "@/components/ErrorBanner";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-export type TaskFormValues = {
+export type EventFormValues = {
   title: string;
-  assignee: Assignee;
-  for_member: ForMember;
-  due_date: string;
-  urgency: Urgency;
+  date: string;
+  time: string;
+  location: string;
   notes: string;
-  category: string;
   image_url: string;
 };
 
-function toFormValues(task: Task | null, defaultAssignee: Assignee): TaskFormValues {
-  if (!task) {
-    return {
-      title: "",
-      assignee: defaultAssignee,
-      for_member: null,
-      due_date: "",
-      urgency: "medium",
-      notes: "",
-      category: "",
-      image_url: "",
-    };
+function toFormValues(event: FamilyEvent | null): EventFormValues {
+  if (!event) {
+    return { title: "", date: "", time: "", location: "", notes: "", image_url: "" };
   }
   return {
-    title: task.title,
-    assignee: task.assignee === "Other" ? defaultAssignee : task.assignee,
-    for_member: task.for_member ?? null,
-    due_date: task.due_date ?? "",
-    urgency: task.urgency,
-    notes: task.notes ?? "",
-    category: task.category ?? "",
-    image_url: task.image_url ?? "",
+    title: event.title,
+    date: event.date,
+    time: event.time ? event.time.slice(0, 5) : "",
+    location: event.location ?? "",
+    notes: event.notes ?? "",
+    image_url: event.image_url ?? "",
   };
 }
 
-export default function TaskFormModal({
-  editingTask,
-  defaultAssignee,
+export default function EventFormModal({
+  editingEvent,
   error,
   onDismissError,
   onClose,
   onSubmit,
 }: {
-  editingTask: Task | null | undefined;
-  defaultAssignee: Assignee;
+  editingEvent: FamilyEvent | null | undefined;
   error?: string | null;
   onDismissError: () => void;
   onClose: () => void;
-  onSubmit: (values: TaskFormValues) => Promise<void>;
+  onSubmit: (values: EventFormValues) => Promise<void>;
 }) {
-  const [values, setValues] = useState<TaskFormValues>(() => toFormValues(editingTask ?? null, defaultAssignee));
+  const [values, setValues] = useState<EventFormValues>(() => toFormValues(editingEvent ?? null));
   const [submitting, setSubmitting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!values.title.trim() || submitting) return;
+    if (!values.title.trim() || !values.date || submitting) return;
     setSubmitting(true);
     await onSubmit(values);
     setSubmitting(false);
@@ -92,14 +68,14 @@ export default function TaskFormModal({
     setUploading(true);
     setUploadError(null);
     const path = `${crypto.randomUUID()}-${file.name}`;
-    const { error } = await supabase.storage.from("task-images").upload(path, file);
-    if (error) {
-      console.error("[Supabase] העלאת תמונה:", error.message, error);
-      setUploadError("העלאת התמונה נכשלה. ודאו שמיגרציית 0005 הורצה בסופאבייס.");
+    const { error: err } = await supabase.storage.from("event-images").upload(path, file);
+    if (err) {
+      console.error("[Supabase] העלאת תמונה לאירוע:", err.message, err);
+      setUploadError("העלאת התמונה נכשלה. ודאו שמיגרציית 0006 הורצה בסופאבייס.");
       setUploading(false);
       return;
     }
-    const { data } = supabase.storage.from("task-images").getPublicUrl(path);
+    const { data } = supabase.storage.from("event-images").getPublicUrl(path);
     setValues((v) => ({ ...v, image_url: data.publicUrl }));
     setUploading(false);
   }
@@ -109,7 +85,7 @@ export default function TaskFormModal({
       <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-white shadow-lg sm:max-w-md sm:rounded-3xl dark:bg-stone-900">
         <div className="flex shrink-0 items-center justify-between border-b border-amber-100 p-4 dark:border-amber-950/30">
           <h2 className="text-lg font-bold text-stone-800 dark:text-stone-100">
-            {editingTask ? "עריכת משימה" : "משימה חדשה"}
+            {editingEvent ? "עריכת אירוע" : "אירוע חדש"}
           </h2>
           <button
             type="button"
@@ -125,107 +101,59 @@ export default function TaskFormModal({
           <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
             {error && <ErrorBanner message={error} onDismiss={onDismissError} />}
 
-            <input
-              type="text"
-              autoFocus
-              value={values.title}
-              onChange={(event) => setValues((v) => ({ ...v, title: event.target.value }))}
-              placeholder="כותרת המשימה..."
-              className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
-            />
-
             <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">שיוך</p>
-              <div className="grid grid-cols-3 gap-2">
-                {ASSIGNEE_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => setValues((v) => ({ ...v, assignee: option.value }))}
-                    className={`rounded-xl border px-2 py-1.5 text-sm font-medium transition-colors ${
-                      values.assignee === option.value
-                        ? "border-amber-400 bg-amber-500 text-white"
-                        : "border-stone-200 bg-white text-stone-600 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-300"
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">עבור / קשור ל-</p>
-              <div className="grid grid-cols-5 gap-1.5">
-                {FOR_MEMBER_OPTIONS.map((option) => (
-                  <button
-                    key={option.label}
-                    type="button"
-                    onClick={() => setValues((v) => ({ ...v, for_member: option.value }))}
-                    className={`rounded-xl border px-1.5 py-1.5 text-xs font-medium transition-colors ${
-                      values.for_member === option.value
-                        ? "border-amber-400 bg-amber-500 text-white"
-                        : "border-stone-200 bg-white text-stone-600 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-300"
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">שם האירוע</p>
+              <input
+                type="text"
+                autoFocus
+                value={values.title}
+                onChange={(event) => setValues((v) => ({ ...v, title: event.target.value }))}
+                placeholder="שם האירוע..."
+                className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
+              />
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:gap-2">
               <div className="flex-1">
-                <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">תאריך יעד</p>
+                <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">תאריך *</p>
                 <input
                   type="date"
-                  value={values.due_date}
-                  onChange={(event) => setValues((v) => ({ ...v, due_date: event.target.value }))}
+                  value={values.date}
+                  onChange={(event) => setValues((v) => ({ ...v, date: event.target.value }))}
                   className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
                 />
               </div>
               <div className="flex-1">
-                <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">דחיפות</p>
-                <select
-                  value={values.urgency}
-                  onChange={(event) =>
-                    setValues((v) => ({ ...v, urgency: event.target.value as Urgency }))
-                  }
+                <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">שעה (לא חובה)</p>
+                <input
+                  type="time"
+                  value={values.time}
+                  onChange={(event) => setValues((v) => ({ ...v, time: event.target.value }))}
                   className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
-                >
-                  {(Object.keys(URGENCY_LEVELS) as Urgency[]).map((level) => (
-                    <option key={level} value={level}>
-                      {URGENCY_LEVELS[level].label}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
             </div>
 
             <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">קטגוריה</p>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">מיקום (לא חובה)</p>
               <input
                 type="text"
-                list="task-category-suggestions"
-                value={values.category}
-                onChange={(event) => setValues((v) => ({ ...v, category: event.target.value }))}
-                placeholder="לדוגמה: בית, עבודה..."
+                value={values.location}
+                onChange={(event) => setValues((v) => ({ ...v, location: event.target.value }))}
+                placeholder="מיקום..."
                 className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
               />
-              <datalist id="task-category-suggestions">
-                {CATEGORY_SUGGESTIONS.map((suggestion) => (
-                  <option key={suggestion} value={suggestion} />
-                ))}
-              </datalist>
             </div>
 
             <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">הערות</p>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
+                הערות / פרטים נוספים (לא חובה)
+              </p>
               <textarea
                 value={values.notes}
                 onChange={(event) => setValues((v) => ({ ...v, notes: event.target.value }))}
-                rows={3}
-                placeholder="פרטים נוספים..."
+                rows={2}
+                placeholder="הערות..."
                 className="w-full resize-none rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
               />
             </div>
@@ -274,10 +202,10 @@ export default function TaskFormModal({
           <div className="shrink-0 border-t border-amber-100 bg-white p-4 dark:border-amber-950/30 dark:bg-stone-900">
             <button
               type="submit"
-              disabled={!values.title.trim() || submitting}
+              disabled={!values.title.trim() || !values.date || submitting}
               className="w-full rounded-xl bg-amber-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-600 disabled:opacity-50"
             >
-              {editingTask ? "שמירת שינויים" : "הוספת משימה"}
+              {editingEvent ? "שמירת שינויים" : "הוספת אירוע"}
             </button>
           </div>
         </form>

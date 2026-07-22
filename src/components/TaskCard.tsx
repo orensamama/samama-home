@@ -37,6 +37,7 @@ export default function TaskCard({
   const urgency = URGENCY_LEVELS[task.urgency];
   const status = STATUS_LEVELS[task.status];
   const assigneeTag = ASSIGNEE_TAGS[task.assignee];
+  const forMemberTag = task.for_member ? ASSIGNEE_TAGS[task.for_member] : null;
   const isDone = task.status === "done";
   const overdue = task.due_date ? isOverdue(task.due_date, task.status) : false;
   const hasDetails = Boolean(task.notes || task.category);
@@ -72,6 +73,11 @@ export default function TaskCard({
           {showAssignee && (
             <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${assigneeTag.color}`}>
               {assigneeTag.label}
+            </span>
+          )}
+          {forMemberTag && (
+            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${forMemberTag.color}`}>
+              עבור: {forMemberTag.label}
             </span>
           )}
           {task.due_date && (

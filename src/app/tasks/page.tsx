@@ -13,7 +13,7 @@ import ErrorBanner from "@/components/ErrorBanner";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
-import { sortTasks, type Assignee, type Task } from "@/lib/taskData";
+import { FOR_MEMBER_OPTIONS, sortTasks, type Assignee, type ForMember, type Task } from "@/lib/taskData";
 
 const TABS: { value: Assignee; label: string }[] = [
   { value: "Shared", label: "משותף" },
@@ -34,13 +34,20 @@ export default function TasksPage() {
   const [pageError, setPageError] = useState<string | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [forMemberFilter, setForMemberFilter] = useState<ForMember | "all">("all");
 
   const realTasks = allTasks.filter((task) => !task.is_template);
   // "משותף" is the master view: every task in the house, tagged by who owns
   // it. The personal tabs filter down to just that person's tasks. Kits are
   // always Shared, so they only ever surface on the master tab.
   const isMasterTab = activeTab === "Shared";
-  const tabTasks = isMasterTab ? realTasks : realTasks.filter((task) => task.assignee === activeTab);
+  const assigneeFilteredTasks = isMasterTab
+    ? realTasks
+    : realTasks.filter((task) => task.assignee === activeTab);
+  const tabTasks =
+    forMemberFilter === "all"
+      ? assigneeFilteredTasks
+      : assigneeFilteredTasks.filter((task) => task.for_member === forMemberFilter);
 
   const standaloneTasks = sortTasks(
     tabTasks.filter((task) => !task.archived && !task.kit_instance_id)
@@ -97,6 +104,7 @@ export default function TasksPage() {
     const payload = {
       title: values.title.trim(),
       assignee: values.assignee,
+      for_member: values.for_member,
       due_date: values.due_date || null,
       urgency: values.urgency,
       notes: values.notes.trim() || null,
@@ -271,6 +279,34 @@ export default function TasksPage() {
               }`}
             >
               {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => setForMemberFilter("all")}
+            className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+              forMemberFilter === "all"
+                ? "bg-amber-500 text-white"
+                : "border border-stone-200 text-stone-500 dark:border-stone-700 dark:text-stone-400"
+            }`}
+          >
+            הכל
+          </button>
+          {FOR_MEMBER_OPTIONS.map((option) => (
+            <button
+              key={option.label}
+              type="button"
+              onClick={() => setForMemberFilter(option.value)}
+              className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+                forMemberFilter === option.value
+                  ? "bg-amber-500 text-white"
+                  : "border border-stone-200 text-stone-500 dark:border-stone-700 dark:text-stone-400"
+              }`}
+            >
+              עבור: {option.label}
             </button>
           ))}
         </div>

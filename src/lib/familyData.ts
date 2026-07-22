@@ -4,6 +4,7 @@ export type FamilyEvent = {
   id: string;
   title: string;
   date: string; // ISO date, e.g. "2026-07-24"
+  time: string | null; // "HH:MM:SS" (Postgres time), or null if no time set
   location: string | null;
   notes: string | null;
   image_url: string | null;
@@ -22,6 +23,40 @@ export function formatDate(dateStr: string) {
     day: "numeric",
     month: "long",
   }).format(new Date(dateStr));
+}
+
+/** "14:30:00" (Postgres time) -> "14:30" */
+export function formatTime(timeStr: string) {
+  return timeStr.slice(0, 5);
+}
+
+/** Google Calendar "quick add" template link for a single event. */
+export function buildGoogleCalendarUrl(event: FamilyEvent) {
+  const dateCompact = event.date.replaceAll("-", "");
+  let dates: string;
+
+  if (event.time) {
+    const [hours, minutes] = event.time.split(":");
+    const start = new Date(`${event.date}T${event.time}`);
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+    const startCompact = `${dateCompact}T${hours}${minutes}00`;
+    const endCompact = `${toISODate(end).replaceAll("-", "")}T${String(end.getHours()).padStart(2, "0")}${String(end.getMinutes()).padStart(2, "0")}00`;
+    dates = `${startCompact}/${endCompact}`;
+  } else {
+    const nextDay = new Date(event.date);
+    nextDay.setDate(nextDay.getDate() + 1);
+    dates = `${dateCompact}/${toISODate(nextDay).replaceAll("-", "")}`;
+  }
+
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: event.title,
+    dates,
+  });
+  if (event.location) params.set("location", event.location);
+  if (event.notes) params.set("details", event.notes);
+
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
 export function formatCurrency(amount: number) {

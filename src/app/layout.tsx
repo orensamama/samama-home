@@ -1,9 +1,10 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import BottomNav from "@/components/BottomNav";
+import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 
 export const metadata: Metadata = {
-  title: "סממה בית",
+  title: "בית סממה",
   description: "מערכת ניהול הבית למשפחת סממה - משימות, קניות, תאריכים והוצאות",
   manifest: "/manifest.json",
   icons: {
@@ -16,7 +17,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "סממה בית",
+    title: "בית סממה",
   },
 };
 
@@ -37,6 +38,7 @@ export default function RootLayout({
       <body className="flex h-full min-h-screen flex-col bg-[#fdf8f1] font-sans text-stone-900 antialiased dark:bg-[#1c1815] dark:text-stone-50">
         <main className="flex-1 pb-20">{children}</main>
         <BottomNav />
+        <ServiceWorkerRegister />
       </body>
     </html>
   );
