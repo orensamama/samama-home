@@ -15,6 +15,9 @@ import {
 export default function TaskCard({
   task,
   showAssignee,
+  selectionMode,
+  selected,
+  onToggleSelect,
   onCycleStatus,
   onToggleDone,
   onEdit,
@@ -22,6 +25,9 @@ export default function TaskCard({
 }: {
   task: Task;
   showAssignee: boolean;
+  selectionMode: boolean;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
   onCycleStatus: (task: Task) => void;
   onToggleDone: (task: Task) => void;
   onEdit: (task: Task) => void;
@@ -45,6 +51,20 @@ export default function TaskCard({
     <li className="flex flex-col gap-2 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900">
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
+          {selectionMode && (
+            <button
+              type="button"
+              onClick={() => onToggleSelect(task.id)}
+              aria-label={selected ? "הסרה מהבחירה" : "הוספה לבחירה"}
+              className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 transition-colors ${
+                selected
+                  ? "border-amber-500 bg-amber-500 text-white"
+                  : "border-stone-300 text-transparent dark:border-stone-600"
+              }`}
+            >
+              <Check className="h-3 w-3" />
+            </button>
+          )}
           <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${urgency.color}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${urgency.dot}`} />
             {urgency.label}
@@ -67,24 +87,26 @@ export default function TaskCard({
           )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onEdit(task)}
-            aria-label="עריכת משימה"
-            className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-amber-100 hover:text-amber-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onArchive(task)}
-            aria-label="העברה לארכיון"
-            className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
-          >
-            <Archive className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        {!selectionMode && (
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onEdit(task)}
+              aria-label="עריכת משימה"
+              className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-amber-100 hover:text-amber-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onArchive(task)}
+              aria-label="העברה לארכיון"
+              className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
+            >
+              <Archive className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex items-start gap-3">

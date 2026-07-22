@@ -16,6 +16,7 @@ export type Task = {
   template_name: string | null;
   image_url: string | null;
   archived: boolean;
+  kit_instance_id: string | null;
   created_at: string;
 };
 

@@ -3,7 +3,8 @@
 import { useState } from "react";
 import type { PostgrestError } from "@supabase/supabase-js";
 import { ArrowRight, Check, LayoutTemplate, Plus, X } from "lucide-react";
-import type { Assignee, Task, Urgency } from "@/lib/taskData";
+import type { Task, Urgency } from "@/lib/taskData";
+import { friendlyErrorMessage } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
 
 export type TemplateGroup = {
@@ -11,9 +12,11 @@ export type TemplateGroup = {
   tasks: Task[];
 };
 
+// Kit items are intentionally unassigned (no Oren/Orit/Hadar/Ziv) -- they
+// always land as Shared. Grouping by kit_instance_id (assigned by the
+// caller) is what keeps them organized, not per-item assignee.
 export type KitItem = {
   title: string;
-  assignee: Assignee;
   category: string | null;
   urgency: Urgency;
   notes: string | null;
@@ -22,7 +25,6 @@ export type KitItem = {
 type EditableItem = {
   id: string;
   title: string;
-  assignee: Assignee;
   category: string;
   urgency: Urgency;
   notes: string | null;
@@ -33,7 +35,6 @@ function toEditableItems(group: TemplateGroup): EditableItem[] {
   return group.tasks.map((task) => ({
     id: task.id,
     title: task.title,
-    assignee: task.assignee,
     category: task.category ?? "כללי",
     urgency: task.urgency,
     notes: task.notes,
@@ -48,7 +49,7 @@ export default function KitGenerator({
 }: {
   templateGroups: TemplateGroup[];
   onClose: () => void;
-  onConfirm: (items: KitItem[]) => Promise<PostgrestError | null>;
+  onConfirm: (kitName: string, items: KitItem[]) => Promise<PostgrestError | null>;
 }) {
   const [selectedGroup, setSelectedGroup] = useState<TemplateGroup | null>(null);
   const [items, setItems] = useState<EditableItem[]>([]);
@@ -80,7 +81,7 @@ export default function KitGenerator({
     });
   }
 
-  function addCustomItem(category: string, assignee: Assignee) {
+  function addCustomItem(category: string) {
     const text = (newItemText[category] ?? "").trim();
     if (!text) return;
     setItems((prev) => [
@@ -88,7 +89,6 @@ export default function KitGenerator({
       {
         id: crypto.randomUUID(),
         title: text,
-        assignee,
         category,
         urgency: "medium",
         notes: null,
@@ -99,21 +99,21 @@ export default function KitGenerator({
   }
 
   async function handleConfirm() {
+    if (!selectedGroup) return;
     const selectedItems = items.filter((item) => item.selected && item.title.trim());
     if (selectedItems.length === 0 || confirming) return;
     setConfirming(true);
     setError(null);
     const payload: KitItem[] = selectedItems.map((item) => ({
       title: item.title.trim(),
-      assignee: item.assignee,
       category: item.category,
       urgency: item.urgency,
       notes: item.notes,
     }));
-    const err = await onConfirm(payload);
+    const err = await onConfirm(selectedGroup.name, payload);
     setConfirming(false);
     if (err) {
-      setError(err.message);
+      setError(friendlyErrorMessage(err));
       return;
     }
     onClose();
@@ -190,7 +190,6 @@ export default function KitGenerator({
               {categories.map((category) => {
                 const categoryItems = items.filter((item) => item.category === category);
                 const allSelected = categoryItems.every((item) => item.selected);
-                const categoryAssignee = categoryItems[0]?.assignee ?? "Shared";
 
                 return (
                   <div key={category} className="flex flex-col gap-2">
@@ -244,7 +243,7 @@ export default function KitGenerator({
                         onKeyDown={(event) => {
                           if (event.key === "Enter") {
                             event.preventDefault();
-                            addCustomItem(category, categoryAssignee);
+                            addCustomItem(category);
                           }
                         }}
                         placeholder="הוספת פריט..."
@@ -252,7 +251,7 @@ export default function KitGenerator({
                       />
                       <button
                         type="button"
-                        onClick={() => addCustomItem(category, categoryAssignee)}
+                        onClick={() => addCustomItem(category)}
                         aria-label="הוספת פריט לקטגוריה"
                         className="rounded-lg border border-dashed border-stone-300 px-2 text-stone-500 hover:bg-stone-50 dark:border-stone-700 dark:text-stone-400 dark:hover:bg-stone-800"
                       >

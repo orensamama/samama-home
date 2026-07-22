@@ -28,15 +28,27 @@ export default function ShoppingArsenal() {
 
   const grouped = groupByCategory(products);
 
-  function isActive(product: MasterProduct) {
-    return shoppingItems.some(
+  function getActiveItem(product: MasterProduct) {
+    return shoppingItems.find(
       (item) => item.product_id === product.id && item.in_cart && !item.completed
     );
   }
 
-  async function quickAdd(product: MasterProduct) {
-    if (isActive(product)) return;
+  async function toggleProduct(product: MasterProduct) {
     setError(null);
+    const activeItem = getActiveItem(product);
+
+    if (activeItem) {
+      const { error: err } = await supabase.from("shopping").delete().eq("id", activeItem.id);
+      if (err) {
+        logSupabaseError("הסרת פריט מהרשימה", err);
+        setError(friendlyErrorMessage(err));
+        return;
+      }
+      refetchShopping();
+      return;
+    }
+
     const { error: err } = await supabase.from("shopping").insert({
       product_id: product.id,
       title: product.name,
@@ -120,13 +132,12 @@ export default function ShoppingArsenal() {
             <h3 className="text-sm font-bold text-stone-700 dark:text-stone-200">{category}</h3>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {items.map((product) => {
-                const active = isActive(product);
+                const active = Boolean(getActiveItem(product));
                 return (
                   <button
                     key={product.id}
                     type="button"
-                    onClick={() => quickAdd(product)}
-                    disabled={active}
+                    onClick={() => toggleProduct(product)}
                     className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm transition-colors ${
                       active
                         ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-400"
