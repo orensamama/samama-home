@@ -8,7 +8,7 @@ import TaskCard from "@/components/TaskCard";
 import KitCard from "@/components/KitCard";
 import ArchivedTaskCard from "@/components/ArchivedTaskCard";
 import TaskFormModal, { type TaskFormValues } from "@/components/TaskFormModal";
-import KitGenerator, { type KitItem, type TemplateGroup } from "@/components/KitGenerator";
+import KitGenerator, { type KitItem, type NewKitItem, type TemplateGroup } from "@/components/KitGenerator";
 import ErrorBanner from "@/components/ErrorBanner";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
@@ -231,6 +231,26 @@ export default function TasksPage() {
     return null;
   }
 
+  async function handleCreateKit(kitName: string, items: NewKitItem[]): Promise<PostgrestError | null> {
+    const newRows = items.map((item) => ({
+      title: item.title,
+      category: item.category,
+      assignee: "Shared" as const,
+      urgency: "medium" as const,
+      status: "todo" as const,
+      is_personal: false,
+      is_template: true,
+      template_name: kitName,
+    }));
+    const { error } = await supabase.from("tasks").insert(newRows);
+    if (error) {
+      logSupabaseError("יצירת קיט חדש", error);
+      return error;
+    }
+    await refetch();
+    return null;
+  }
+
   return (
     <div className="flex min-h-full flex-col">
       <PageHeader title="משימות" subtitle="ניהול המשימות המשפחתיות" />
@@ -442,6 +462,7 @@ export default function TasksPage() {
           templateGroups={templateGroups}
           onClose={() => setShowTemplates(false)}
           onConfirm={handleConfirmKit}
+          onCreateKit={handleCreateKit}
         />
       )}
     </div>
