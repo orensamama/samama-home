@@ -1,4 +1,4 @@
-export type Assignee = "Oren" | "Orit" | "Shared" | "Other";
+export type Assignee = "Oren" | "Orit" | "Hadar" | "Ziv" | "Shared" | "Other";
 export type Urgency = "low" | "medium" | "high";
 export type Status = "todo" | "in_progress" | "done";
 
@@ -15,6 +15,7 @@ export type Task = {
   is_template: boolean;
   template_name: string | null;
   image_url: string | null;
+  archived: boolean;
   created_at: string;
 };
 
@@ -22,7 +23,38 @@ export const ASSIGNEE_OPTIONS: { value: Assignee; label: string }[] = [
   { value: "Shared", label: "משותף" },
   { value: "Oren", label: "אורן" },
   { value: "Orit", label: "אורית" },
+  { value: "Hadar", label: "הדר" },
+  { value: "Ziv", label: "זיו" },
 ];
+
+// Colored tags shown next to each task in the "משותף" master view, so it's
+// clear at a glance who a task belongs to when multiple assignees are mixed.
+export const ASSIGNEE_TAGS: Record<Assignee, { label: string; color: string }> = {
+  Shared: {
+    label: "משותף",
+    color: "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400",
+  },
+  Oren: {
+    label: "אורן",
+    color: "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400",
+  },
+  Orit: {
+    label: "אורית",
+    color: "bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-400",
+  },
+  Hadar: {
+    label: "הדר",
+    color: "bg-pink-100 text-pink-700 dark:bg-pink-950/40 dark:text-pink-400",
+  },
+  Ziv: {
+    label: "זיו",
+    color: "bg-teal-100 text-teal-700 dark:bg-teal-950/40 dark:text-teal-400",
+  },
+  Other: {
+    label: "אחר",
+    color: "bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300",
+  },
+};
 
 export const URGENCY_LEVELS: Record<Urgency, { label: string; color: string; dot: string }> = {
   low: {
@@ -57,7 +89,7 @@ export const STATUS_LEVELS: Record<Status, { label: string; color: string }> = {
   },
 };
 
-// "done" is reached exclusively via the archive checkbox, not this cycle.
+// "done" is toggled exclusively via the card's done checkbox, not this cycle.
 export const STATUS_CYCLE: Status[] = ["todo", "in_progress"];
 
 export const CATEGORY_SUGGESTIONS = ["בית", "עבודה", "בריאות", "כספים", "ילדים", "כללי"];

@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ChevronDown, Pencil, Trash2 } from "lucide-react";
+import { Archive, Check, ChevronDown, Pencil } from "lucide-react";
 import {
-  ASSIGNEE_OPTIONS,
+  ASSIGNEE_TAGS,
   STATUS_CYCLE,
   STATUS_LEVELS,
   URGENCY_LEVELS,
@@ -16,21 +16,22 @@ export default function TaskCard({
   task,
   showAssignee,
   onCycleStatus,
-  onMarkDone,
+  onToggleDone,
   onEdit,
-  onDelete,
+  onArchive,
 }: {
   task: Task;
   showAssignee: boolean;
   onCycleStatus: (task: Task) => void;
-  onMarkDone: (task: Task) => void;
+  onToggleDone: (task: Task) => void;
   onEdit: (task: Task) => void;
-  onDelete: (id: string) => void;
+  onArchive: (task: Task) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const urgency = URGENCY_LEVELS[task.urgency];
   const status = STATUS_LEVELS[task.status];
-  const assigneeLabel = ASSIGNEE_OPTIONS.find((option) => option.value === task.assignee)?.label;
+  const assigneeTag = ASSIGNEE_TAGS[task.assignee];
+  const isDone = task.status === "done";
   const overdue = task.due_date ? isOverdue(task.due_date, task.status) : false;
   const hasDetails = Boolean(task.notes || task.category);
 
@@ -48,9 +49,9 @@ export default function TaskCard({
             <span className={`h-1.5 w-1.5 rounded-full ${urgency.dot}`} />
             {urgency.label}
           </span>
-          {showAssignee && assigneeLabel && (
-            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-600 dark:bg-stone-800 dark:text-stone-300">
-              {assigneeLabel}
+          {showAssignee && (
+            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${assigneeTag.color}`}>
+              {assigneeTag.label}
             </span>
           )}
           {task.due_date && (
@@ -77,11 +78,11 @@ export default function TaskCard({
           </button>
           <button
             type="button"
-            onClick={() => onDelete(task.id)}
-            aria-label="מחיקת משימה"
-            className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30"
+            onClick={() => onArchive(task)}
+            aria-label="העברה לארכיון"
+            className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Archive className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
@@ -89,9 +90,13 @@ export default function TaskCard({
       <div className="flex items-start gap-3">
         <button
           type="button"
-          onClick={() => onMarkDone(task)}
-          aria-label="סמן כבוצע והעבר לארכיון"
-          className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 border-stone-300 text-transparent transition-colors hover:border-emerald-400 hover:text-emerald-500 dark:border-stone-600"
+          onClick={() => onToggleDone(task)}
+          aria-label={isDone ? "בטל סימון כבוצע" : "סמן כבוצע"}
+          className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
+            isDone
+              ? "border-emerald-500 bg-emerald-500 text-white"
+              : "border-stone-300 text-transparent hover:border-emerald-400 dark:border-stone-600"
+          }`}
         >
           <Check className="h-3.5 w-3.5" />
         </button>
@@ -110,7 +115,7 @@ export default function TaskCard({
         >
           <span
             className={`text-sm font-medium ${
-              task.status === "done"
+              isDone
                 ? "text-stone-400 line-through dark:text-stone-500"
                 : "text-stone-800 dark:text-stone-100"
             }`}
@@ -132,13 +137,15 @@ export default function TaskCard({
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={nextStatus}
-        className={`w-fit rounded-full px-3 py-1 text-xs font-medium transition-colors ${status.color}`}
-      >
-        {status.label}
-      </button>
+      {!isDone && (
+        <button
+          type="button"
+          onClick={nextStatus}
+          className={`w-fit rounded-full px-3 py-1 text-xs font-medium transition-colors ${status.color}`}
+        >
+          {status.label}
+        </button>
+      )}
     </li>
   );
 }

@@ -100,8 +100,8 @@ export default function TaskFormModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center">
-      <div className="flex max-h-[85vh] w-full flex-col overflow-hidden rounded-t-3xl bg-white shadow-lg sm:max-w-md sm:rounded-3xl dark:bg-stone-900">
+    <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 sm:items-center">
+      <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-white shadow-lg sm:max-w-md sm:rounded-3xl dark:bg-stone-900">
         <div className="flex shrink-0 items-center justify-between border-b border-amber-100 p-4 dark:border-amber-950/30">
           <h2 className="text-lg font-bold text-stone-800 dark:text-stone-100">
             {editingTask ? "עריכת משימה" : "משימה חדשה"}
@@ -131,13 +131,13 @@ export default function TaskFormModal({
 
             <div>
               <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">שיוך</p>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 {ASSIGNEE_OPTIONS.map((option) => (
                   <button
                     key={option.value}
                     type="button"
                     onClick={() => setValues((v) => ({ ...v, assignee: option.value }))}
-                    className={`flex-1 rounded-xl border px-2 py-1.5 text-sm font-medium transition-colors ${
+                    className={`rounded-xl border px-2 py-1.5 text-sm font-medium transition-colors ${
                       values.assignee === option.value
                         ? "border-amber-400 bg-amber-500 text-white"
                         : "border-stone-200 bg-white text-stone-600 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-300"

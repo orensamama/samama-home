@@ -7,7 +7,7 @@ import PageHeader from "@/components/PageHeader";
 import TaskCard from "@/components/TaskCard";
 import ArchivedTaskCard from "@/components/ArchivedTaskCard";
 import TaskFormModal, { type TaskFormValues } from "@/components/TaskFormModal";
-import TemplatePicker, { type TemplateGroup } from "@/components/TemplatePicker";
+import KitGenerator, { type KitItem, type TemplateGroup } from "@/components/KitGenerator";
 import ErrorBanner from "@/components/ErrorBanner";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
@@ -33,11 +33,12 @@ export default function TasksPage() {
   const [pageError, setPageError] = useState<string | null>(null);
 
   const realTasks = allTasks.filter((task) => !task.is_template);
-  const tabTasks = realTasks.filter((task) =>
-    activeTab === "Shared" ? task.assignee === "Shared" || task.assignee === "Other" : task.assignee === activeTab
-  );
-  const activeTasks = sortTasks(tabTasks.filter((task) => task.status !== "done"));
-  const archivedTasks = tabTasks.filter((task) => task.status === "done");
+  // "משותף" is the master view: every task in the house, tagged by who owns
+  // it. The personal tabs filter down to just that person's tasks.
+  const isMasterTab = activeTab === "Shared";
+  const tabTasks = isMasterTab ? realTasks : realTasks.filter((task) => task.assignee === activeTab);
+  const activeTasks = sortTasks(tabTasks.filter((task) => !task.archived));
+  const archivedTasks = tabTasks.filter((task) => task.archived);
 
   const templateGroups: TemplateGroup[] = Array.from(
     allTasks
@@ -50,8 +51,6 @@ export default function TasksPage() {
         return groups;
       }, new Map<string, Task[]>())
   ).map(([name, tasks]) => ({ name, tasks }));
-
-  const activeTabLabel = TABS.find((tab) => tab.value === activeTab)?.label ?? "";
 
   async function handleFormSubmit(values: TaskFormValues) {
     setFormError(null);
@@ -91,8 +90,19 @@ export default function TasksPage() {
     refetch();
   }
 
-  async function handleMarkDone(task: Task) {
-    const { error } = await supabase.from("tasks").update({ status: "done" }).eq("id", task.id);
+  async function handleToggleDone(task: Task) {
+    const nextStatus = task.status === "done" ? "todo" : "done";
+    const { error } = await supabase.from("tasks").update({ status: nextStatus }).eq("id", task.id);
+    if (error) {
+      logSupabaseError("סימון משימה כבוצע", error);
+      setPageError(friendlyErrorMessage(error));
+      return;
+    }
+    refetch();
+  }
+
+  async function handleArchive(task: Task) {
+    const { error } = await supabase.from("tasks").update({ archived: true }).eq("id", task.id);
     if (error) {
       logSupabaseError("העברת משימה לארכיון", error);
       setPageError(friendlyErrorMessage(error));
@@ -102,39 +112,39 @@ export default function TasksPage() {
   }
 
   async function handleRestore(task: Task) {
-    const { error } = await supabase.from("tasks").update({ status: "todo" }).eq("id", task.id);
+    const { error } = await supabase.from("tasks").update({ archived: false }).eq("id", task.id);
     if (error) {
-      logSupabaseError("שחזור משימה", error);
+      logSupabaseError("שחזור משימה מהארכיון", error);
       setPageError(friendlyErrorMessage(error));
       return;
     }
     refetch();
   }
 
-  async function handleDelete(id: string) {
+  async function handleDeleteForever(id: string) {
     const { error } = await supabase.from("tasks").delete().eq("id", id);
     if (error) {
-      logSupabaseError("מחיקת משימה", error);
+      logSupabaseError("מחיקת משימה לצמיתות", error);
       setPageError(friendlyErrorMessage(error));
       return;
     }
     refetch();
   }
 
-  async function handleLoadTemplate(group: TemplateGroup): Promise<PostgrestError | null> {
-    const newRows = group.tasks.map((task) => ({
-      title: task.title,
-      assignee: activeTab,
-      urgency: task.urgency,
+  async function handleConfirmKit(items: KitItem[]): Promise<PostgrestError | null> {
+    const newRows = items.map((item) => ({
+      title: item.title,
+      assignee: item.assignee,
+      urgency: item.urgency,
       status: "todo" as const,
-      notes: task.notes,
-      category: task.category,
-      is_personal: activeTab !== "Shared",
+      notes: item.notes,
+      category: item.category,
+      is_personal: item.assignee !== "Shared",
       is_template: false,
     }));
     const { error } = await supabase.from("tasks").insert(newRows);
     if (error) {
-      logSupabaseError("טעינת תבנית משימות", error);
+      logSupabaseError("טעינת קיט", error);
       return error;
     }
     await refetch();
@@ -186,7 +196,7 @@ export default function TasksPage() {
                 className="flex flex-1 items-center justify-center gap-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-900/50 dark:bg-stone-900 dark:text-amber-400 dark:hover:bg-stone-800"
               >
                 <LayoutTemplate className="h-4 w-4" />
-                טעינת תבנית
+                צור רשימה מקיט
               </button>
             </div>
 
@@ -201,7 +211,7 @@ export default function TasksPage() {
 
             {activeTasks.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
-                אין משימות כאן עדיין. הוסיפו משימה או טענו תבנית!
+                אין משימות כאן עדיין. הוסיפו משימה או טענו קיט!
               </div>
             ) : (
               <ul className="flex flex-col gap-2">
@@ -209,15 +219,15 @@ export default function TasksPage() {
                   <TaskCard
                     key={task.id}
                     task={task}
-                    showAssignee={activeTab === "Shared"}
+                    showAssignee={isMasterTab}
                     onCycleStatus={handleCycleStatus}
-                    onMarkDone={handleMarkDone}
+                    onToggleDone={handleToggleDone}
                     onEdit={(t) => {
                       setEditingTask(t);
                       setFormError(null);
                       setShowForm(true);
                     }}
-                    onDelete={handleDelete}
+                    onArchive={handleArchive}
                   />
                 ))}
               </ul>
@@ -245,7 +255,7 @@ export default function TasksPage() {
                     key={task.id}
                     task={task}
                     onRestore={handleRestore}
-                    onDeleteForever={handleDelete}
+                    onDeleteForever={handleDeleteForever}
                   />
                 ))}
               </ul>
@@ -270,11 +280,10 @@ export default function TasksPage() {
       )}
 
       {showTemplates && (
-        <TemplatePicker
+        <KitGenerator
           templateGroups={templateGroups}
-          targetLabel={activeTabLabel}
           onClose={() => setShowTemplates(false)}
-          onLoad={handleLoadTemplate}
+          onConfirm={handleConfirmKit}
         />
       )}
     </div>
