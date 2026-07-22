@@ -1,22 +1,41 @@
 Add-Type -AssemblyName System.Drawing
 
-function New-SmoothClosedPath {
-    # Catmull-Rom spline through every point, converted to cubic Beziers --
-    # traces a continuously smooth, organic curve with no straight edges or
-    # hard corners (unlike a rounded polygon, which is still fundamentally
-    # geometric underneath).
-    param([System.Drawing.PointF[]]$Points)
+function New-RoundedPolygonPath {
+    # Straight-edged polygon with each corner softened by a quadratic-Bezier
+    # round (per-vertex radius) -- reads as a clean, classic silhouette
+    # (unlike a spline through every point, which drifts into a blobby,
+    # amorphous shape with no recognizable straight edges).
+    param([System.Drawing.PointF[]]$Points, [double[]]$Radii)
     $n = $Points.Count
     $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $prevOut = $null
+    $firstIn = $null
     for ($i = 0; $i -lt $n; $i++) {
-        $p0 = $Points[($i - 1 + $n) % $n]
-        $p1 = $Points[$i]
-        $p2 = $Points[($i + 1) % $n]
-        $p3 = $Points[($i + 2) % $n]
-        $c1 = New-Object System.Drawing.PointF(($p1.X + ($p2.X - $p0.X) / 6.0), ($p1.Y + ($p2.Y - $p0.Y) / 6.0))
-        $c2 = New-Object System.Drawing.PointF(($p2.X - ($p3.X - $p1.X) / 6.0), ($p2.Y - ($p3.Y - $p1.Y) / 6.0))
-        $path.AddBezier($p1, $c1, $c2, $p2)
+        $prev = $Points[($i - 1 + $n) % $n]
+        $cur = $Points[$i]
+        $next = $Points[($i + 1) % $n]
+        $r = $Radii[$i]
+
+        $toPrevX = $prev.X - $cur.X; $toPrevY = $prev.Y - $cur.Y
+        $toNextX = $next.X - $cur.X; $toNextY = $next.Y - $cur.Y
+        $lenPrev = [Math]::Sqrt($toPrevX * $toPrevX + $toPrevY * $toPrevY)
+        $lenNext = [Math]::Sqrt($toNextX * $toNextX + $toNextY * $toNextY)
+        $rr = [Math]::Min($r, [Math]::Min($lenPrev, $lenNext) * 0.5)
+
+        $inPt = New-Object System.Drawing.PointF(($cur.X + $toPrevX / $lenPrev * $rr), ($cur.Y + $toPrevY / $lenPrev * $rr))
+        $outPt = New-Object System.Drawing.PointF(($cur.X + $toNextX / $lenNext * $rr), ($cur.Y + $toNextY / $lenNext * $rr))
+
+        if ($i -eq 0) {
+            $firstIn = $inPt
+        } else {
+            $path.AddLine($prevOut, $inPt)
+        }
+        $c1 = New-Object System.Drawing.PointF(($inPt.X + ($cur.X - $inPt.X) * 0.6667), ($inPt.Y + ($cur.Y - $inPt.Y) * 0.6667))
+        $c2 = New-Object System.Drawing.PointF(($outPt.X + ($cur.X - $outPt.X) * 0.6667), ($outPt.Y + ($cur.Y - $outPt.Y) * 0.6667))
+        $path.AddBezier($inPt, $c1, $c2, $outPt)
+        $prevOut = $outPt
     }
+    $path.AddLine($prevOut, $firstIn)
     $path.CloseFigure()
     return $path
 }
@@ -32,8 +51,8 @@ function New-AppIcon {
 
     $S = [double]$Size
 
-    # Warm cream -> peach/orange diagonal background (full bleed, no rounding --
-    # the OS applies its own mask for maskable/adaptive icons).
+    # Warm cream -> orange diagonal background (full bleed -- the OS applies
+    # its own mask for maskable/adaptive icons).
     $bgRect = New-Object System.Drawing.Rectangle 0, 0, $Size, $Size
     $bgBrush = New-Object System.Drawing.Drawing2D.LinearGradientBrush(
         $bgRect,
@@ -44,64 +63,63 @@ function New-AppIcon {
     $g.FillRectangle($bgBrush, $bgRect)
 
     # Soft glossy highlight, upper-left, for a little depth.
-    $glowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(50, 255, 255, 255))
+    $glowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(45, 255, 255, 255))
     $glowSize = $S * 0.9
     $g.FillEllipse($glowBrush, [float](-$glowSize * 0.35), [float](-$glowSize * 0.45), [float]$glowSize, [float]$glowSize)
 
     $cx = $S * 0.5
 
-    # House silhouette: a plush, huggable blob traced through a ring of
-    # anchor points with a Catmull-Rom spline -- a gentle dome-like peak,
-    # softly flared "shoulders", a rounded belly, and a wide, settled base.
-    # No straight edges anywhere, so it reads as warm and organic rather
-    # than a geometric stencil.
-    $peakY = $S * 0.14
-    $roofY = $S * 0.32
-    $roofR = $S * 0.15
-    $shoulderY = $S * 0.44
-    $shoulderR = $S * 0.36
-    $bellyY = $S * 0.62
-    $bellyR = $S * 0.36
-    $baseY = $S * 0.82
-    $baseR = $S * 0.23
+    # Classic house silhouette: a clear triangular roof over a softened
+    # square body -- five anchor points (peak, two eaves, two base
+    # corners), each corner rounded just enough to feel friendly while
+    # keeping straight, legible edges throughout.
+    $peakY = $S * 0.15
+    $eaveY = $S * 0.46
+    $baseY = $S * 0.83
+    $bodyR = $S * 0.29
 
     $housePoints = @(
         (New-Object System.Drawing.PointF($cx, $peakY)),
-        (New-Object System.Drawing.PointF(($cx + $roofR), $roofY)),
-        (New-Object System.Drawing.PointF(($cx + $shoulderR), $shoulderY)),
-        (New-Object System.Drawing.PointF(($cx + $bellyR), $bellyY)),
-        (New-Object System.Drawing.PointF(($cx + $baseR), $baseY)),
-        (New-Object System.Drawing.PointF(($cx - $baseR), $baseY)),
-        (New-Object System.Drawing.PointF(($cx - $bellyR), $bellyY)),
-        (New-Object System.Drawing.PointF(($cx - $shoulderR), $shoulderY)),
-        (New-Object System.Drawing.PointF(($cx - $roofR), $roofY))
+        (New-Object System.Drawing.PointF(($cx + $bodyR), $eaveY)),
+        (New-Object System.Drawing.PointF(($cx + $bodyR), $baseY)),
+        (New-Object System.Drawing.PointF(($cx - $bodyR), $baseY)),
+        (New-Object System.Drawing.PointF(($cx - $bodyR), $eaveY))
     )
-    $housePath = New-SmoothClosedPath -Points $housePoints
+    $houseRadii = @(($S * 0.05), ($S * 0.035), ($S * 0.09), ($S * 0.09), ($S * 0.035))
+    $housePath = New-RoundedPolygonPath -Points $housePoints -Radii $houseRadii
 
     $houseFill = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml("#fffdfa"))
     $g.FillPath($houseFill, $housePath)
 
-    $houseOutline = New-Object System.Drawing.Pen([System.Drawing.ColorTranslator]::FromHtml("#c2410c"), [float]([Math]::Max(1.0, $S * 0.01)))
+    $houseOutline = New-Object System.Drawing.Pen([System.Drawing.ColorTranslator]::FromHtml("#c2410c"), [float]([Math]::Max(1.0, $S * 0.014)))
     $houseOutline.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
     $g.DrawPath($houseOutline, $housePath)
 
-    # "S" monogram, resting gently in the belly of the house -- Samama family initial.
-    $sFont = New-Object System.Drawing.Font("Georgia", [float]($S * 0.26), [System.Drawing.FontStyle]::Bold)
+    # Roofline accent: a warm band along the two roof slopes, like a ridge.
+    $roofBand = New-Object System.Drawing.Pen([System.Drawing.ColorTranslator]::FromHtml("#fb923c"), [float]($S * 0.03))
+    $roofBand.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+    $roofBand.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $roofBand.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $g.DrawLine($roofBand, [float]($cx - $bodyR * 0.62), [float]($peakY + ($eaveY - $peakY) * 0.62), [float]$cx, [float]$peakY)
+    $g.DrawLine($roofBand, [float]($cx + $bodyR * 0.62), [float]($peakY + ($eaveY - $peakY) * 0.62), [float]$cx, [float]$peakY)
+
+    # "S" monogram, centered in the body -- Samama family initial.
+    $sFont = New-Object System.Drawing.Font("Georgia", [float]($S * 0.30), [System.Drawing.FontStyle]::Bold)
     $sBrush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml("#c2410c"))
     $sFormat = New-Object System.Drawing.StringFormat
     $sFormat.Alignment = [System.Drawing.StringAlignment]::Center
     $sFormat.LineAlignment = [System.Drawing.StringAlignment]::Center
-    $doorCenter = New-Object System.Drawing.RectangleF(
-        [float]($cx - $bellyR), [float]$shoulderY,
-        [float]($bellyR * 2), [float]($baseY - $shoulderY)
+    $bodyRect = New-Object System.Drawing.RectangleF(
+        [float]($cx - $bodyR), [float]$eaveY,
+        [float]($bodyR * 2), [float]($baseY - $eaveY)
     )
-    $g.DrawString("S", $sFont, $sBrush, $doorCenter, $sFormat)
+    $g.DrawString("S", $sFont, $sBrush, $bodyRect, $sFormat)
 
-    # Small heart accent, tucked beside the roof's peak -- the family touch.
+    # Small heart accent, tucked beside the roof peak -- the family touch.
     $heartColor = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml("#fb7185"))
-    $hcx = $cx + $S * 0.13
-    $hcy = $peakY + $S * 0.05
-    $hs = $S * 0.10
+    $hcx = $cx + $S * 0.33
+    $hcy = $peakY + $S * 0.10
+    $hs = $S * 0.13
     $g.FillEllipse($heartColor, [float]($hcx - $hs * 0.5), [float]($hcy - $hs * 0.28), [float]($hs * 0.55), [float]($hs * 0.55))
     $g.FillEllipse($heartColor, [float]($hcx - $hs * 0.05), [float]($hcy - $hs * 0.28), [float]($hs * 0.55), [float]($hs * 0.55))
     $tri = @(
@@ -114,6 +132,7 @@ function New-AppIcon {
     $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
 
     $houseOutline.Dispose()
+    $roofBand.Dispose()
     $houseFill.Dispose()
     $sBrush.Dispose()
     $sFont.Dispose()
