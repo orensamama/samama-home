@@ -5,13 +5,14 @@ import { Calendar, CalendarDays, Check, Copy, MapPin, Pencil, Plus, Trash2 } fro
 import PageHeader from "@/components/PageHeader";
 import ErrorBanner from "@/components/ErrorBanner";
 import WeeklyCalendar from "@/components/WeeklyCalendar";
+import MonthlyCalendar from "@/components/MonthlyCalendar";
 import EventFormModal, { type EventFormValues } from "@/components/EventFormModal";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import { buildGoogleCalendarUrl, formatDate, formatTime, type FamilyEvent } from "@/lib/familyData";
 
-type View = "list" | "calendar";
+type View = "list" | "week" | "month";
 
 export default function EventsPage() {
   const { rows: events, refetch } = useSupabaseTable<FamilyEvent>(
@@ -81,11 +82,11 @@ export default function EventsPage() {
       <PageHeader title="תאריכים ואירועים" subtitle="האירועים הקרובים של המשפחה" />
 
       <div className="flex flex-col gap-4 p-4">
-        <div className="grid grid-cols-2 gap-1.5 rounded-2xl bg-amber-50 p-1 dark:bg-stone-900">
+        <div className="grid grid-cols-3 gap-1.5 rounded-2xl bg-amber-50 p-1 dark:bg-stone-900">
           <button
             type="button"
             onClick={() => setView("list")}
-            className={`rounded-xl px-2 py-2 text-sm font-medium transition-colors ${
+            className={`rounded-xl px-2 py-2 text-xs font-medium transition-colors sm:text-sm ${
               view === "list"
                 ? "bg-white text-amber-700 shadow-sm dark:bg-stone-800 dark:text-amber-400"
                 : "text-stone-500 dark:text-stone-400"
@@ -95,14 +96,25 @@ export default function EventsPage() {
           </button>
           <button
             type="button"
-            onClick={() => setView("calendar")}
-            className={`rounded-xl px-2 py-2 text-sm font-medium transition-colors ${
-              view === "calendar"
+            onClick={() => setView("week")}
+            className={`rounded-xl px-2 py-2 text-xs font-medium transition-colors sm:text-sm ${
+              view === "week"
                 ? "bg-white text-amber-700 shadow-sm dark:bg-stone-800 dark:text-amber-400"
                 : "text-stone-500 dark:text-stone-400"
             }`}
           >
             לוח שבועי
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("month")}
+            className={`rounded-xl px-2 py-2 text-xs font-medium transition-colors sm:text-sm ${
+              view === "month"
+                ? "bg-white text-amber-700 shadow-sm dark:bg-stone-800 dark:text-amber-400"
+                : "text-stone-500 dark:text-stone-400"
+            }`}
+          >
+            לוח חודשי
           </button>
         </div>
 
@@ -134,8 +146,10 @@ export default function EventsPage() {
           </div>
         </div>
 
-        {view === "calendar" ? (
+        {view === "week" ? (
           <WeeklyCalendar events={events} />
+        ) : view === "month" ? (
+          <MonthlyCalendar events={events} />
         ) : (
           <>
             <button

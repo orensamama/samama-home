@@ -62,24 +62,26 @@ function New-AppIcon {
 
     $cx = $S * 0.5
 
-    # House silhouette: overhanging roof + body, all corners softly rounded.
-    $peakY = $S * 0.30
-    $eaveY = $S * 0.48
-    $bottomY = $S * 0.745
-    $roofHalfW = $S * 0.25
-    $bodyHalfW = $S * 0.185
-    $cornerR = $S * 0.032
+    # House silhouette: a simple, convex roof-into-wall pentagon (no overhang
+    # notch to catch weird corners on), gently flared at the base, every
+    # corner softly rounded for a warm, organic (not boxy) shape. Sized to
+    # fill most of the icon's safe area.
+    $peakY = $S * 0.16
+    $eaveY = $S * 0.40
+    $bottomY = $S * 0.76
+    $wallTopHalfW = $S * 0.27
+    $wallBottomHalfW = $S * 0.30
+    $cornerR = $S * 0.075
 
     $housePoints = @(
         (New-Object System.Drawing.PointF($cx, $peakY)),
-        (New-Object System.Drawing.PointF(($cx + $roofHalfW), $eaveY)),
-        (New-Object System.Drawing.PointF(($cx + $bodyHalfW), $eaveY)),
-        (New-Object System.Drawing.PointF(($cx + $bodyHalfW), $bottomY)),
-        (New-Object System.Drawing.PointF(($cx - $bodyHalfW), $bottomY)),
-        (New-Object System.Drawing.PointF(($cx - $bodyHalfW), $eaveY)),
-        (New-Object System.Drawing.PointF(($cx - $roofHalfW), $eaveY))
+        (New-Object System.Drawing.PointF(($cx + $wallTopHalfW), $eaveY)),
+        (New-Object System.Drawing.PointF(($cx + $wallBottomHalfW), $bottomY)),
+        (New-Object System.Drawing.PointF(($cx - $wallBottomHalfW), $bottomY)),
+        (New-Object System.Drawing.PointF(($cx - $wallTopHalfW), $eaveY))
     )
     $housePath = New-RoundedPolygonPath -Points $housePoints -Radius $cornerR
+    $bodyHalfWBottom = $wallBottomHalfW
 
     $houseFill = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml("#fffdfa"))
     $g.FillPath($houseFill, $housePath)
@@ -95,15 +97,15 @@ function New-AppIcon {
     $sFormat.Alignment = [System.Drawing.StringAlignment]::Center
     $sFormat.LineAlignment = [System.Drawing.StringAlignment]::Center
     $doorCenter = New-Object System.Drawing.RectangleF(
-        [float]($cx - $bodyHalfW), [float]$eaveY,
-        [float]($bodyHalfW * 2), [float]($bottomY - $eaveY + $S * 0.02)
+        [float]($cx - $bodyHalfWBottom), [float]$eaveY,
+        [float]($bodyHalfWBottom * 2), [float]($bottomY - $eaveY + $S * 0.02)
     )
     $g.DrawString("S", $sFont, $sBrush, $doorCenter, $sFormat)
 
     # Small heart accent, tucked beside the roof peak -- the family touch.
     $heartColor = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml("#fb7185"))
-    $hcx = $cx + $roofHalfW * 0.62
-    $hcy = $peakY - $S * 0.065
+    $hcx = $cx + $S * 0.13
+    $hcy = $peakY + $S * 0.03
     $hs = $S * 0.10
     $g.FillEllipse($heartColor, [float]($hcx - $hs * 0.5), [float]($hcy - $hs * 0.28), [float]($hs * 0.55), [float]($hs * 0.55))
     $g.FillEllipse($heartColor, [float]($hcx - $hs * 0.05), [float]($hcy - $hs * 0.28), [float]($hs * 0.55), [float]($hs * 0.55))

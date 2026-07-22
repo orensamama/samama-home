@@ -26,8 +26,8 @@ export default function SummaryCards() {
       bg: "bg-orange-50 dark:bg-orange-950/40",
     },
     {
-      href: "/shopping",
-      label: "מוצרים חסרים ברשימה",
+      href: "/shopping?view=live",
+      label: "רשימת הקניות שלי",
       value: shopping.filter((item) => item.in_cart && !item.completed).length,
       icon: ShoppingCart,
       color: "text-amber-600 dark:text-amber-400",

@@ -12,8 +12,13 @@ const VIEWS: { value: View; label: string }[] = [
   { value: "live", label: "🛒 אני בסופר!" },
 ];
 
+function getInitialView(): View {
+  if (typeof window === "undefined") return "prep";
+  return new URLSearchParams(window.location.search).get("view") === "live" ? "live" : "prep";
+}
+
 export default function ShoppingPage() {
-  const [view, setView] = useState<View>("prep");
+  const [view, setView] = useState<View>(getInitialView);
 
   return (
     <div className="flex min-h-full flex-col">
