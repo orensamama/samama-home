@@ -1,33 +1,21 @@
 Add-Type -AssemblyName System.Drawing
 
-function New-RoundedPolygonPath {
-    param(
-        [System.Drawing.PointF[]]$Points,
-        [double]$Radius
-    )
+function New-SmoothClosedPath {
+    # Catmull-Rom spline through every point, converted to cubic Beziers --
+    # traces a continuously smooth, organic curve with no straight edges or
+    # hard corners (unlike a rounded polygon, which is still fundamentally
+    # geometric underneath).
+    param([System.Drawing.PointF[]]$Points)
     $n = $Points.Count
-    $insetStarts = New-Object 'System.Collections.Generic.List[System.Drawing.PointF]'
-    $insetEnds = New-Object 'System.Collections.Generic.List[System.Drawing.PointF]'
-    for ($i = 0; $i -lt $n; $i++) {
-        $prev = $Points[($i - 1 + $n) % $n]
-        $cur = $Points[$i]
-        $next = $Points[($i + 1) % $n]
-        $toPrevX = $prev.X - $cur.X; $toPrevY = $prev.Y - $cur.Y
-        $toNextX = $next.X - $cur.X; $toNextY = $next.Y - $cur.Y
-        $lenPrev = [Math]::Sqrt($toPrevX * $toPrevX + $toPrevY * $toPrevY)
-        $lenNext = [Math]::Sqrt($toNextX * $toNextX + $toNextY * $toNextY)
-        $r = [Math]::Min($Radius, [Math]::Min($lenPrev, $lenNext) * 0.5)
-        $startPt = New-Object System.Drawing.PointF(($cur.X + $toPrevX / $lenPrev * $r), ($cur.Y + $toPrevY / $lenPrev * $r))
-        $endPt = New-Object System.Drawing.PointF(($cur.X + $toNextX / $lenNext * $r), ($cur.Y + $toNextY / $lenNext * $r))
-        $insetStarts.Add($startPt)
-        $insetEnds.Add($endPt)
-    }
     $path = New-Object System.Drawing.Drawing2D.GraphicsPath
     for ($i = 0; $i -lt $n; $i++) {
-        $endPrev = $insetEnds[($i - 1 + $n) % $n]
-        $startCur = $insetStarts[$i]
-        $path.AddLine($endPrev, $startCur)
-        $path.AddBezier($startCur, $Points[$i], $Points[$i], $insetEnds[$i])
+        $p0 = $Points[($i - 1 + $n) % $n]
+        $p1 = $Points[$i]
+        $p2 = $Points[($i + 1) % $n]
+        $p3 = $Points[($i + 2) % $n]
+        $c1 = New-Object System.Drawing.PointF(($p1.X + ($p2.X - $p0.X) / 6.0), ($p1.Y + ($p2.Y - $p0.Y) / 6.0))
+        $c2 = New-Object System.Drawing.PointF(($p2.X - ($p3.X - $p1.X) / 6.0), ($p2.Y - ($p3.Y - $p1.Y) / 6.0))
+        $path.AddBezier($p1, $c1, $c2, $p2)
     }
     $path.CloseFigure()
     return $path
@@ -62,26 +50,33 @@ function New-AppIcon {
 
     $cx = $S * 0.5
 
-    # House silhouette: a simple, convex roof-into-wall pentagon (no overhang
-    # notch to catch weird corners on), gently flared at the base, every
-    # corner softly rounded for a warm, organic (not boxy) shape. Sized to
-    # fill most of the icon's safe area.
-    $peakY = $S * 0.16
-    $eaveY = $S * 0.40
-    $bottomY = $S * 0.76
-    $wallTopHalfW = $S * 0.27
-    $wallBottomHalfW = $S * 0.30
-    $cornerR = $S * 0.075
+    # House silhouette: a plush, huggable blob traced through a ring of
+    # anchor points with a Catmull-Rom spline -- a gentle dome-like peak,
+    # softly flared "shoulders", a rounded belly, and a wide, settled base.
+    # No straight edges anywhere, so it reads as warm and organic rather
+    # than a geometric stencil.
+    $peakY = $S * 0.14
+    $roofY = $S * 0.32
+    $roofR = $S * 0.15
+    $shoulderY = $S * 0.44
+    $shoulderR = $S * 0.36
+    $bellyY = $S * 0.62
+    $bellyR = $S * 0.36
+    $baseY = $S * 0.82
+    $baseR = $S * 0.23
 
     $housePoints = @(
         (New-Object System.Drawing.PointF($cx, $peakY)),
-        (New-Object System.Drawing.PointF(($cx + $wallTopHalfW), $eaveY)),
-        (New-Object System.Drawing.PointF(($cx + $wallBottomHalfW), $bottomY)),
-        (New-Object System.Drawing.PointF(($cx - $wallBottomHalfW), $bottomY)),
-        (New-Object System.Drawing.PointF(($cx - $wallTopHalfW), $eaveY))
+        (New-Object System.Drawing.PointF(($cx + $roofR), $roofY)),
+        (New-Object System.Drawing.PointF(($cx + $shoulderR), $shoulderY)),
+        (New-Object System.Drawing.PointF(($cx + $bellyR), $bellyY)),
+        (New-Object System.Drawing.PointF(($cx + $baseR), $baseY)),
+        (New-Object System.Drawing.PointF(($cx - $baseR), $baseY)),
+        (New-Object System.Drawing.PointF(($cx - $bellyR), $bellyY)),
+        (New-Object System.Drawing.PointF(($cx - $shoulderR), $shoulderY)),
+        (New-Object System.Drawing.PointF(($cx - $roofR), $roofY))
     )
-    $housePath = New-RoundedPolygonPath -Points $housePoints -Radius $cornerR
-    $bodyHalfWBottom = $wallBottomHalfW
+    $housePath = New-SmoothClosedPath -Points $housePoints
 
     $houseFill = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml("#fffdfa"))
     $g.FillPath($houseFill, $housePath)
@@ -90,22 +85,22 @@ function New-AppIcon {
     $houseOutline.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
     $g.DrawPath($houseOutline, $housePath)
 
-    # "S" monogram, standing in for the door -- Samama family initial.
+    # "S" monogram, resting gently in the belly of the house -- Samama family initial.
     $sFont = New-Object System.Drawing.Font("Georgia", [float]($S * 0.26), [System.Drawing.FontStyle]::Bold)
     $sBrush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml("#c2410c"))
     $sFormat = New-Object System.Drawing.StringFormat
     $sFormat.Alignment = [System.Drawing.StringAlignment]::Center
     $sFormat.LineAlignment = [System.Drawing.StringAlignment]::Center
     $doorCenter = New-Object System.Drawing.RectangleF(
-        [float]($cx - $bodyHalfWBottom), [float]$eaveY,
-        [float]($bodyHalfWBottom * 2), [float]($bottomY - $eaveY + $S * 0.02)
+        [float]($cx - $bellyR), [float]$shoulderY,
+        [float]($bellyR * 2), [float]($baseY - $shoulderY)
     )
     $g.DrawString("S", $sFont, $sBrush, $doorCenter, $sFormat)
 
-    # Small heart accent, tucked beside the roof peak -- the family touch.
+    # Small heart accent, tucked beside the roof's peak -- the family touch.
     $heartColor = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml("#fb7185"))
     $hcx = $cx + $S * 0.13
-    $hcy = $peakY + $S * 0.03
+    $hcy = $peakY + $S * 0.05
     $hs = $S * 0.10
     $g.FillEllipse($heartColor, [float]($hcx - $hs * 0.5), [float]($hcy - $hs * 0.28), [float]($hs * 0.55), [float]($hs * 0.55))
     $g.FillEllipse($heartColor, [float]($hcx - $hs * 0.05), [float]($hcy - $hs * 0.28), [float]($hs * 0.55), [float]($hs * 0.55))
