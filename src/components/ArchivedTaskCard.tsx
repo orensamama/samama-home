@@ -1,9 +1,10 @@
 "use client";
 
+import { memo } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
 import type { Task } from "@/lib/taskData";
 
-export default function ArchivedTaskCard({
+function ArchivedTaskCard({
   task,
   onRestore,
   onDeleteForever,
@@ -44,3 +45,5 @@ export default function ArchivedTaskCard({
     </li>
   );
 }
+
+export default memo(ArchivedTaskCard);

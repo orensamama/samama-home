@@ -12,6 +12,7 @@ export type ShoppingItem = {
   category: string | null;
   completed: boolean;
   in_cart: boolean;
+  qty: number;
 };
 
 // Order matters: this is the display order used everywhere (Arsenal

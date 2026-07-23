@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import TaskCard from "@/components/TaskCard";
 import type { Task } from "@/lib/taskData";
@@ -67,7 +67,7 @@ function KitCategorySection({
   );
 }
 
-export default function KitCard({
+function KitCard({
   name,
   tasks,
   selectionMode,
@@ -187,3 +187,5 @@ export default function KitCard({
     </div>
   );
 }
+
+export default memo(KitCard);

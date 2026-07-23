@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Archive, ArrowRight, CheckSquare, LayoutTemplate, Plus, X } from "lucide-react";
 import type { PostgrestError } from "@supabase/supabase-js";
 import PageHeader from "@/components/PageHeader";
@@ -36,68 +36,84 @@ export default function TasksPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [forMemberFilter, setForMemberFilter] = useState<ForMember | "all">("all");
 
-  const realTasks = allTasks.filter((task) => !task.is_template);
   // "משותף" is the master view: every task in the house, tagged by who owns
   // it. The personal tabs filter down to just that person's tasks. Kits are
   // always Shared, so they only ever surface on the master tab.
   const isMasterTab = activeTab === "Shared";
-  const assigneeFilteredTasks = isMasterTab
-    ? realTasks
-    : realTasks.filter((task) => task.assignee === activeTab);
-  const tabTasks =
-    forMemberFilter === "all"
-      ? assigneeFilteredTasks
-      : assigneeFilteredTasks.filter((task) => task.for_member === forMemberFilter);
 
-  const standaloneTasks = sortTasks(
-    tabTasks.filter((task) => !task.archived && !task.kit_instance_id)
+  // Memoized so their array/object identities stay stable across renders
+  // that don't touch `allTasks`/`activeTab`/`forMemberFilter` (e.g. toggling
+  // selection mode) -- that stability is what lets the memoized TaskCard/
+  // KitCard below actually skip re-rendering instead of getting fresh
+  // array references every time.
+  const tabTasks = useMemo(() => {
+    const realTasks = allTasks.filter((task) => !task.is_template);
+    const assigneeFiltered = isMasterTab
+      ? realTasks
+      : realTasks.filter((task) => task.assignee === activeTab);
+    return forMemberFilter === "all"
+      ? assigneeFiltered
+      : assigneeFiltered.filter((task) => task.for_member === forMemberFilter);
+  }, [allTasks, isMasterTab, activeTab, forMemberFilter]);
+
+  const standaloneTasks = useMemo(
+    () => sortTasks(tabTasks.filter((task) => !task.archived && !task.kit_instance_id)),
+    [tabTasks]
   );
-  const archivedTasks = tabTasks.filter((task) => task.archived);
+  const archivedTasks = useMemo(() => tabTasks.filter((task) => task.archived), [tabTasks]);
 
-  const kitGroups = Array.from(
-    tabTasks
-      .filter((task) => !task.archived && task.kit_instance_id)
-      .reduce((groups, task) => {
-        const key = task.kit_instance_id as string;
-        const list = groups.get(key) ?? [];
-        list.push(task);
-        groups.set(key, list);
-        return groups;
-      }, new Map<string, Task[]>())
-  ).map(([instanceId, tasks]) => ({
-    instanceId,
-    name: tasks[0]?.template_name ?? "קיט",
-    tasks: sortTasks(tasks),
-  }));
+  const kitGroups = useMemo(
+    () =>
+      Array.from(
+        tabTasks
+          .filter((task) => !task.archived && task.kit_instance_id)
+          .reduce((groups, task) => {
+            const key = task.kit_instance_id as string;
+            const list = groups.get(key) ?? [];
+            list.push(task);
+            groups.set(key, list);
+            return groups;
+          }, new Map<string, Task[]>())
+      ).map(([instanceId, tasks]) => ({
+        instanceId,
+        name: tasks[0]?.template_name ?? "קיט",
+        tasks: sortTasks(tasks),
+      })),
+    [tabTasks]
+  );
 
-  const templateGroups: TemplateGroup[] = Array.from(
-    allTasks
-      .filter((task) => task.is_template && task.template_name)
-      .reduce((groups, task) => {
-        const key = task.template_name as string;
-        const list = groups.get(key) ?? [];
-        list.push(task);
-        groups.set(key, list);
-        return groups;
-      }, new Map<string, Task[]>())
-  ).map(([name, tasks]) => ({ name, tasks }));
+  const templateGroups: TemplateGroup[] = useMemo(
+    () =>
+      Array.from(
+        allTasks
+          .filter((task) => task.is_template && task.template_name)
+          .reduce((groups, task) => {
+            const key = task.template_name as string;
+            const list = groups.get(key) ?? [];
+            list.push(task);
+            groups.set(key, list);
+            return groups;
+          }, new Map<string, Task[]>())
+      ).map(([name, tasks]) => ({ name, tasks })),
+    [allTasks]
+  );
 
   const hasAnyActiveContent = standaloneTasks.length > 0 || kitGroups.length > 0;
   const standaloneDoneCount = standaloneTasks.filter((task) => task.status === "done").length;
 
-  function exitSelectionMode() {
+  const exitSelectionMode = useCallback(() => {
     setSelectionMode(false);
     setSelectedIds(new Set());
-  }
+  }, []);
 
-  function toggleSelect(id: string) {
+  const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  }
+  }, []);
 
   async function handleFormSubmit(values: TaskFormValues) {
     setFormError(null);
@@ -128,82 +144,103 @@ export default function TasksPage() {
     setEditingTask(null);
   }
 
-  async function handleCycleStatus(task: Task) {
-    const { error } = await supabase.from("tasks").update({ status: task.status }).eq("id", task.id);
-    if (error) {
-      logSupabaseError("עדכון סטטוס משימה", error);
-      setPageError(friendlyErrorMessage(error));
-      return;
-    }
-    refetch();
-  }
+  const handleCycleStatus = useCallback(
+    async (task: Task) => {
+      const { error } = await supabase.from("tasks").update({ status: task.status }).eq("id", task.id);
+      if (error) {
+        logSupabaseError("עדכון סטטוס משימה", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
 
-  async function handleToggleDone(task: Task) {
-    const nextStatus = task.status === "done" ? "todo" : "done";
-    const { error } = await supabase.from("tasks").update({ status: nextStatus }).eq("id", task.id);
-    if (error) {
-      logSupabaseError("סימון משימה כבוצע", error);
-      setPageError(friendlyErrorMessage(error));
-      return;
-    }
-    refetch();
-  }
+  const handleToggleDone = useCallback(
+    async (task: Task) => {
+      const nextStatus = task.status === "done" ? "todo" : "done";
+      const { error } = await supabase.from("tasks").update({ status: nextStatus }).eq("id", task.id);
+      if (error) {
+        logSupabaseError("סימון משימה כבוצע", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
 
-  async function handleArchive(task: Task) {
-    const { error } = await supabase.from("tasks").update({ archived: true }).eq("id", task.id);
-    if (error) {
-      logSupabaseError("העברת משימה לארכיון", error);
-      setPageError(friendlyErrorMessage(error));
-      return;
-    }
-    refetch();
-  }
+  const handleArchive = useCallback(
+    async (task: Task) => {
+      const { error } = await supabase.from("tasks").update({ archived: true }).eq("id", task.id);
+      if (error) {
+        logSupabaseError("העברת משימה לארכיון", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
 
-  async function handleRestore(task: Task) {
-    const { error } = await supabase.from("tasks").update({ archived: false }).eq("id", task.id);
-    if (error) {
-      logSupabaseError("שחזור משימה מהארכיון", error);
-      setPageError(friendlyErrorMessage(error));
-      return;
-    }
-    refetch();
-  }
+  const handleRestore = useCallback(
+    async (task: Task) => {
+      const { error } = await supabase.from("tasks").update({ archived: false }).eq("id", task.id);
+      if (error) {
+        logSupabaseError("שחזור משימה מהארכיון", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
 
-  async function handleDeleteForever(id: string) {
-    const { error } = await supabase.from("tasks").delete().eq("id", id);
-    if (error) {
-      logSupabaseError("מחיקת משימה לצמיתות", error);
-      setPageError(friendlyErrorMessage(error));
-      return;
-    }
-    refetch();
-  }
+  const handleDeleteForever = useCallback(
+    async (id: string) => {
+      const { error } = await supabase.from("tasks").delete().eq("id", id);
+      if (error) {
+        logSupabaseError("מחיקת משימה לצמיתות", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
 
-  async function handleClearCompleted(tasks: Task[]) {
-    const ids = tasks.filter((task) => task.status === "done").map((task) => task.id);
-    if (ids.length === 0) return;
-    const { error } = await supabase.from("tasks").update({ archived: true }).in("id", ids);
-    if (error) {
-      logSupabaseError("ניקוי משימות שבוצעו", error);
-      setPageError(friendlyErrorMessage(error));
-      return;
-    }
-    refetch();
-  }
+  const handleClearCompleted = useCallback(
+    async (tasks: Task[]) => {
+      const ids = tasks.filter((task) => task.status === "done").map((task) => task.id);
+      if (ids.length === 0) return;
+      const { error } = await supabase.from("tasks").update({ archived: true }).in("id", ids);
+      if (error) {
+        logSupabaseError("ניקוי משימות שבוצעו", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
 
-  async function handleDeleteKit(tasks: Task[]) {
-    const ids = tasks.map((task) => task.id);
-    if (ids.length === 0) return;
-    const { error } = await supabase.from("tasks").delete().in("id", ids);
-    if (error) {
-      logSupabaseError("מחיקת קיט", error);
-      setPageError(friendlyErrorMessage(error));
-      return;
-    }
-    refetch();
-  }
+  const handleDeleteKit = useCallback(
+    async (tasks: Task[]) => {
+      const ids = tasks.map((task) => task.id);
+      if (ids.length === 0) return;
+      const { error } = await supabase.from("tasks").delete().in("id", ids);
+      if (error) {
+        logSupabaseError("מחיקת קיט", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
 
-  async function handleDeleteSelected() {
+  const handleDeleteSelected = useCallback(async () => {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
     const { error } = await supabase.from("tasks").delete().in("id", ids);
@@ -214,7 +251,13 @@ export default function TasksPage() {
     }
     exitSelectionMode();
     refetch();
-  }
+  }, [selectedIds, refetch, exitSelectionMode]);
+
+  const startEdit = useCallback((task: Task) => {
+    setEditingTask(task);
+    setFormError(null);
+    setShowForm(true);
+  }, []);
 
   async function handleConfirmKit(kitName: string, items: KitItem[]): Promise<PostgrestError | null> {
     const kitInstanceId = crypto.randomUUID();
@@ -395,11 +438,7 @@ export default function TasksPage() {
                         onToggleSelect={toggleSelect}
                         onCycleStatus={handleCycleStatus}
                         onToggleDone={handleToggleDone}
-                        onEdit={(t) => {
-                          setEditingTask(t);
-                          setFormError(null);
-                          setShowForm(true);
-                        }}
+                        onEdit={startEdit}
                         onArchiveItem={handleArchive}
                         onClearCompleted={handleClearCompleted}
                         onDeleteKit={handleDeleteKit}
@@ -433,11 +472,7 @@ export default function TasksPage() {
                           onToggleSelect={toggleSelect}
                           onCycleStatus={handleCycleStatus}
                           onToggleDone={handleToggleDone}
-                          onEdit={(t) => {
-                            setEditingTask(t);
-                            setFormError(null);
-                            setShowForm(true);
-                          }}
+                          onEdit={startEdit}
                           onArchive={handleArchive}
                         />
                       ))}

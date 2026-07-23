@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Archive, Check, ChevronDown, Pencil } from "lucide-react";
 import {
   ASSIGNEE_TAGS,
@@ -12,7 +12,7 @@ import {
   type Task,
 } from "@/lib/taskData";
 
-export default function TaskCard({
+function TaskCard({
   task,
   showAssignee,
   selectionMode,
@@ -177,3 +177,5 @@ export default function TaskCard({
     </li>
   );
 }
+
+export default memo(TaskCard);

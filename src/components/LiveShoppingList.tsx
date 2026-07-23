@@ -1,18 +1,21 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
-import { Check, Plus, Trash2 } from "lucide-react";
+import { useMemo, useState, type FormEvent } from "react";
+import { Check, Minus, Plus, Trash2 } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
+import { useOptimisticRows } from "@/lib/useOptimisticRows";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
 import { groupByCategory, type ShoppingItem } from "@/lib/shoppingData";
 
 export default function LiveShoppingList() {
-  const { rows: items, refetch } = useSupabaseTable<ShoppingItem>("shopping", "*", {
+  const { rows: serverItems, refetch } = useSupabaseTable<ShoppingItem>("shopping", "*", {
     column: "created_at",
     ascending: true,
   });
+  const optimistic = useOptimisticRows(serverItems);
+  const items = optimistic.rows;
   const [newTitle, setNewTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +23,7 @@ export default function LiveShoppingList() {
   const activeItems = items.filter((item) => item.in_cart);
   const pending = activeItems.filter((item) => !item.completed);
   const completed = activeItems.filter((item) => item.completed);
-  const grouped = groupByCategory(pending);
+  const grouped = useMemo(() => groupByCategory(pending), [pending]);
 
   async function toggleCompleted(item: ShoppingItem) {
     setError(null);
@@ -31,6 +34,34 @@ export default function LiveShoppingList() {
     if (err) {
       logSupabaseError("סימון פריט קניות", err);
       setError(friendlyErrorMessage(err));
+      return;
+    }
+    refetch();
+  }
+
+  async function changeQty(item: ShoppingItem, delta: number) {
+    setError(null);
+    const nextQty = item.qty + delta;
+
+    if (nextQty <= 0) {
+      optimistic.remove(item.id);
+      const { error: err } = await supabase.from("shopping").delete().eq("id", item.id);
+      if (err) {
+        logSupabaseError("הסרת פריט מהרשימה", err);
+        setError(friendlyErrorMessage(err));
+        optimistic.reset();
+        return;
+      }
+      refetch();
+      return;
+    }
+
+    optimistic.patch(item.id, { qty: nextQty });
+    const { error: err } = await supabase.from("shopping").update({ qty: nextQty }).eq("id", item.id);
+    if (err) {
+      logSupabaseError("עדכון כמות", err);
+      setError(friendlyErrorMessage(err));
+      optimistic.reset();
       return;
     }
     refetch();
@@ -111,17 +142,41 @@ export default function LiveShoppingList() {
               <h3 className="text-sm font-bold text-stone-700 dark:text-stone-200">{category}</h3>
               <ul className="flex flex-col gap-2">
                 {categoryItems.map((item) => (
-                  <li key={item.id}>
+                  <li
+                    key={item.id}
+                    className="flex items-center gap-3 rounded-2xl border border-amber-100 bg-white p-4 shadow-sm dark:border-amber-950/30 dark:bg-stone-900"
+                  >
                     <button
                       type="button"
                       onClick={() => toggleCompleted(item)}
-                      className="flex w-full items-center gap-3 rounded-2xl border border-amber-100 bg-white p-4 text-right shadow-sm transition-colors hover:bg-amber-50 dark:border-amber-950/30 dark:bg-stone-900 dark:hover:bg-stone-800"
+                      className="flex min-w-0 flex-1 items-center gap-3 text-right transition-colors hover:text-amber-600 dark:hover:text-amber-400"
                     >
                       <span className="h-8 w-8 shrink-0 rounded-full border-2 border-stone-300 dark:border-stone-600" />
                       <span className="flex-1 text-base font-medium text-stone-800 dark:text-stone-100">
                         {item.title}
                       </span>
                     </button>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => changeQty(item, -1)}
+                        aria-label="הפחתת כמות"
+                        className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-50 text-amber-700 transition-colors hover:bg-amber-100 dark:bg-stone-800 dark:text-amber-400 dark:hover:bg-stone-700"
+                      >
+                        <Minus className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="w-5 text-center text-sm font-semibold tabular-nums text-stone-700 dark:text-stone-200">
+                        {item.qty}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => changeQty(item, 1)}
+                        aria-label="הוספת כמות"
+                        className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-50 text-amber-700 transition-colors hover:bg-amber-100 dark:bg-stone-800 dark:text-amber-400 dark:hover:bg-stone-700"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -156,6 +211,7 @@ export default function LiveShoppingList() {
                     </button>
                     <span className="flex-1 text-base text-stone-400 line-through dark:text-stone-500">
                       {item.title}
+                      {item.qty > 1 && <span className="mr-1.5 text-xs">×{item.qty}</span>}
                     </span>
                     <button
                       type="button"

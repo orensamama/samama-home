@@ -3,6 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
+// Module-level, so it survives unmount/remount (e.g. switching bottom-nav
+// tabs and coming back). Every hook instance for the same table+query
+// shares one entry: first render paints last-known data immediately
+// (stale-while-revalidate) instead of an empty list + spinner, while a
+// fresh fetch still runs in the background to reconcile it.
+const rowsCache = new Map<string, unknown[]>();
+
+function cacheKey(table: string, select: string, orderBy?: { column: string; ascending?: boolean }) {
+  return `${table}::${select}::${orderBy?.column ?? ""}::${orderBy?.ascending ?? ""}`;
+}
+
 /**
  * Fetches all rows from a Supabase table and keeps them in sync in
  * real-time via Postgres change notifications. Any insert/update/delete
@@ -15,8 +26,9 @@ export function useSupabaseTable<T>(
   select = "*",
   orderBy?: { column: string; ascending?: boolean }
 ) {
-  const [rows, setRows] = useState<T[]>([]);
-  const [loading, setLoading] = useState(true);
+  const key = cacheKey(table, select, orderBy);
+  const [rows, setRows] = useState<T[]>(() => (rowsCache.get(key) as T[] | undefined) ?? []);
+  const [loading, setLoading] = useState(() => !rowsCache.has(key));
   const isMountedRef = useRef(true);
 
   const load = useCallback(async () => {
@@ -27,6 +39,7 @@ export function useSupabaseTable<T>(
     const { data, error } = await query;
     if (!isMountedRef.current) return;
     if (!error && data) {
+      rowsCache.set(key, data as T[]);
       setRows(data as T[]);
     }
     setLoading(false);
@@ -34,13 +47,14 @@ export function useSupabaseTable<T>(
     // callers often pass a fresh object literal each render, which would
     // otherwise recreate `load` (and resubscribe) on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table, select, orderBy?.column, orderBy?.ascending]);
+  }, [key, table, select, orderBy?.column, orderBy?.ascending]);
 
   useEffect(() => {
     isMountedRef.current = true;
-    // Initial fetch on mount/table change; this is the documented exception
-    // for hydrating from an external system (Supabase) that useEffect exists
-    // for -- it can't happen during render.
+    // Always refetch on mount/table change to reconcile the cached (or
+    // empty) initial state with the server; this is the documented
+    // exception for hydrating from an external system (Supabase) that
+    // useEffect exists for -- it can't happen during render.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
 
