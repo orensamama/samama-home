@@ -8,7 +8,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
 import WhatsAppImportModal, { type ImportItem, type ImportTarget } from "@/components/WhatsAppImportModal";
-import { findExistingShoppingItem } from "@/lib/shoppingMatch";
+import { upsertShoppingItem } from "@/lib/shoppingActions";
 import {
   groupByCategory,
   OTHER_CATEGORY,
@@ -60,18 +60,18 @@ export default function ShoppingArsenal() {
 
   async function addProduct(product: MasterProduct) {
     setError(null);
-    const { error: err } = await supabase.from("shopping").insert({
-      product_id: product.id,
+    const { data, error: err } = await upsertShoppingItem({
+      productId: product.id,
       title: product.name,
       category: product.category,
       qty: product.default_qty,
-      added_by: "Shared",
     });
     if (err) {
       logSupabaseError("הוספת פריט מהארסנל", err);
       setError(friendlyErrorMessage(err));
       return;
     }
+    if (data) optimisticShopping.upsert(data);
     refetchShopping();
   }
 
@@ -107,23 +107,10 @@ export default function ShoppingArsenal() {
     const addsToShoppingList = target !== "arsenal";
     const addsToArsenal = target !== "shopping";
 
-    // A mutable local snapshot, kept in sync as we go, so that two lines
-    // in the *same* paste resolving to the same product (e.g. one exact,
-    // one accepted-fuzzy) chain their quantity bumps correctly instead of
-    // each reading a stale pre-batch qty and clobbering the other's update.
-    let workingShoppingItems = optimisticShopping.rows;
-
     let hadError = false;
     for (const item of importItems) {
       let productId = item.matchedProduct?.id ?? null;
       let category = item.matchedProduct?.category ?? OTHER_CATEGORY;
-
-      // Resolved *before* any new Arsenal product is created below, so a
-      // brand-new product_id (which by definition can't already be on the
-      // list) never masks a real duplicate.
-      const existingShoppingItem = addsToShoppingList
-        ? findExistingShoppingItem(item.matchedProduct, item.name, workingShoppingItems)
-        : null;
 
       // "רק לקניות בסופר": one-off items stay off the Arsenal entirely --
       // only a matched (already-existing) product gets linked. "רק
@@ -149,54 +136,22 @@ export default function ShoppingArsenal() {
 
       if (!addsToShoppingList) continue;
 
-      if (existingShoppingItem) {
-        // Never insert a duplicate line for a product/title already on the
-        // active list -- bump its quantity instead.
-        const nextQty = existingShoppingItem.qty + item.qty;
-        optimisticShopping.patch(existingShoppingItem.id, { qty: nextQty });
-        workingShoppingItems = workingShoppingItems.map((row) =>
-          row.id === existingShoppingItem.id ? { ...row, qty: nextQty } : row
-        );
-        const { error: err } = await supabase
-          .from("shopping")
-          .update({ qty: nextQty })
-          .eq("id", existingShoppingItem.id);
-        if (err) {
-          logSupabaseError("עדכון כמות מייבוא וואטסאפ", err);
-          hadError = true;
-          optimisticShopping.reset();
-        }
-        continue;
-      }
-
-      // A brand-new line: matched-to-Arsenal items can be shown instantly
-      // (product_id/category already known); genuinely new products only
-      // get a card once master_products is refetched below.
-      if (item.matchedProduct) {
-        const tempRow: ShoppingItem = {
-          id: `temp-${crypto.randomUUID()}`,
-          product_id: item.matchedProduct.id,
-          title: item.matchedProduct.name,
-          category: item.matchedProduct.category,
-          completed: false,
-          in_cart: true,
-          qty: item.qty,
-        };
-        optimisticShopping.add(tempRow);
-        workingShoppingItems = [tempRow, ...workingShoppingItems];
-      }
-
-      const { error: err } = await supabase.from("shopping").insert({
-        product_id: productId,
+      // upsert_shopping_item merges into any existing active row for this
+      // product/title atomically on the server -- correct even when two
+      // lines in the same paste resolve to the same product, since each
+      // call reads the DB's up-to-date qty rather than a client snapshot.
+      const { data, error: err } = await upsertShoppingItem({
+        productId,
         title: item.name,
         category: productId ? category : null,
         qty: item.qty,
-        added_by: "Shared",
       });
       if (err) {
         logSupabaseError("הוספת מוצר מייבוא וואטסאפ", err);
         hadError = true;
+        continue;
       }
+      if (data) optimisticShopping.upsert(data);
     }
 
     if (addsToArsenal) await refetchProducts();

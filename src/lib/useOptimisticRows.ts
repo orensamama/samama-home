@@ -30,6 +30,18 @@ export function useOptimisticRows<T extends { id: string }>(serverRows: T[]) {
     setRows((prev) => [row, ...prev]);
   }
 
+  // Patches an existing row in place, or adds it if it's not there yet --
+  // for reflecting a server response whose id you don't know in advance
+  // (e.g. an upsert RPC that may have merged into an existing row instead
+  // of creating a new one).
+  function upsert(row: T) {
+    setRows((prev) => {
+      const exists = prev.some((existing) => existing.id === row.id);
+      if (exists) return prev.map((existing) => (existing.id === row.id ? { ...existing, ...row } : existing));
+      return [row, ...prev];
+    });
+  }
+
   function remove(id: string) {
     setRows((prev) => prev.filter((row) => row.id !== id));
   }
@@ -38,5 +50,5 @@ export function useOptimisticRows<T extends { id: string }>(serverRows: T[]) {
     setRows(serverRows);
   }
 
-  return { rows, patch, add, remove, reset };
+  return { rows, patch, add, upsert, remove, reset };
 }

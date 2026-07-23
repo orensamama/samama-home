@@ -4,6 +4,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Check, Minus, Plus, Trash2 } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { useOptimisticRows } from "@/lib/useOptimisticRows";
+import { upsertShoppingItem } from "@/lib/shoppingActions";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
@@ -73,13 +74,16 @@ export default function LiveShoppingList() {
     if (!trimmed || submitting) return;
     setSubmitting(true);
     setError(null);
-    const { error: err } = await supabase.from("shopping").insert({ title: trimmed, added_by: "Shared" });
+    // Merges into an existing active row with the same title instead of
+    // inserting a duplicate line (e.g. re-typing the same quick-add item).
+    const { data, error: err } = await upsertShoppingItem({ productId: null, title: trimmed, category: null, qty: 1 });
     if (err) {
       logSupabaseError("הוספת פריט קניות", err);
       setError(friendlyErrorMessage(err));
       setSubmitting(false);
       return;
     }
+    if (data) optimistic.upsert(data);
     setNewTitle("");
     await refetch();
     setSubmitting(false);
