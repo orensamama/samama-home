@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
 import WhatsAppImportModal, { type ImportItem, type ImportTarget } from "@/components/WhatsAppImportModal";
+import { findExistingShoppingItem } from "@/lib/shoppingMatch";
 import {
   groupByCategory,
   OTHER_CATEGORY,
@@ -34,16 +35,19 @@ export default function ShoppingArsenal() {
   const [search, setSearch] = useState("");
   const [showImport, setShowImport] = useState(false);
 
+  const activeShoppingItems = useMemo(
+    () => optimisticShopping.rows.filter((item) => item.in_cart && !item.completed),
+    [optimisticShopping.rows]
+  );
+
   // Map lookup instead of an .find() per product per render.
   const activeByProductId = useMemo(() => {
     const map = new Map<string, ShoppingItem>();
-    for (const item of optimisticShopping.rows) {
-      if (item.product_id && item.in_cart && !item.completed) {
-        map.set(item.product_id, item);
-      }
+    for (const item of activeShoppingItems) {
+      if (item.product_id) map.set(item.product_id, item);
     }
     return map;
-  }, [optimisticShopping.rows]);
+  }, [activeShoppingItems]);
 
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -103,34 +107,27 @@ export default function ShoppingArsenal() {
     const addsToShoppingList = target !== "arsenal";
     const addsToArsenal = target !== "shopping";
 
-    // Items that already match an Arsenal product, and are headed for the
-    // live list, can be shown there immediately -- no server round-trip
-    // needed to know their product_id/category. Genuinely new products
-    // only get a card once master_products is refetched below, since
-    // there's nothing to optimistically render yet.
-    if (addsToShoppingList) {
-      for (const item of importItems) {
-        if (item.matchedProduct) {
-          optimisticShopping.add({
-            id: `temp-${crypto.randomUUID()}`,
-            product_id: item.matchedProduct.id,
-            title: item.matchedProduct.name,
-            category: item.matchedProduct.category,
-            completed: false,
-            in_cart: true,
-            qty: item.qty,
-          });
-        }
-      }
-    }
+    // A mutable local snapshot, kept in sync as we go, so that two lines
+    // in the *same* paste resolving to the same product (e.g. one exact,
+    // one accepted-fuzzy) chain their quantity bumps correctly instead of
+    // each reading a stale pre-batch qty and clobbering the other's update.
+    let workingShoppingItems = optimisticShopping.rows;
 
     let hadError = false;
     for (const item of importItems) {
       let productId = item.matchedProduct?.id ?? null;
       let category = item.matchedProduct?.category ?? OTHER_CATEGORY;
 
+      // Resolved *before* any new Arsenal product is created below, so a
+      // brand-new product_id (which by definition can't already be on the
+      // list) never masks a real duplicate.
+      const existingShoppingItem = addsToShoppingList
+        ? findExistingShoppingItem(item.matchedProduct, item.name, workingShoppingItems)
+        : null;
+
       // "רק לקניות בסופר": one-off items stay off the Arsenal entirely --
-      // only a matched (already-existing) product gets linked.
+      // only a matched (already-existing) product gets linked. "רק
+      // לארסנל" on an already-matched product has nothing new to create.
       if (!productId && addsToArsenal) {
         const { data, error: err } = await supabase
           .from("master_products")
@@ -151,6 +148,43 @@ export default function ShoppingArsenal() {
       }
 
       if (!addsToShoppingList) continue;
+
+      if (existingShoppingItem) {
+        // Never insert a duplicate line for a product/title already on the
+        // active list -- bump its quantity instead.
+        const nextQty = existingShoppingItem.qty + item.qty;
+        optimisticShopping.patch(existingShoppingItem.id, { qty: nextQty });
+        workingShoppingItems = workingShoppingItems.map((row) =>
+          row.id === existingShoppingItem.id ? { ...row, qty: nextQty } : row
+        );
+        const { error: err } = await supabase
+          .from("shopping")
+          .update({ qty: nextQty })
+          .eq("id", existingShoppingItem.id);
+        if (err) {
+          logSupabaseError("עדכון כמות מייבוא וואטסאפ", err);
+          hadError = true;
+          optimisticShopping.reset();
+        }
+        continue;
+      }
+
+      // A brand-new line: matched-to-Arsenal items can be shown instantly
+      // (product_id/category already known); genuinely new products only
+      // get a card once master_products is refetched below.
+      if (item.matchedProduct) {
+        const tempRow: ShoppingItem = {
+          id: `temp-${crypto.randomUUID()}`,
+          product_id: item.matchedProduct.id,
+          title: item.matchedProduct.name,
+          category: item.matchedProduct.category,
+          completed: false,
+          in_cart: true,
+          qty: item.qty,
+        };
+        optimisticShopping.add(tempRow);
+        workingShoppingItems = [tempRow, ...workingShoppingItems];
+      }
 
       const { error: err } = await supabase.from("shopping").insert({
         product_id: productId,
@@ -447,6 +481,7 @@ export default function ShoppingArsenal() {
       {showImport && (
         <WhatsAppImportModal
           products={products}
+          activeShoppingItems={activeShoppingItems}
           onClose={() => setShowImport(false)}
           onConfirm={handleImportConfirm}
         />

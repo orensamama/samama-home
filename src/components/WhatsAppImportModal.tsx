@@ -1,9 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowRight, Minus, Plus, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowRight, Check, Minus, Plus, Sparkles, Trash2, X } from "lucide-react";
 import { parseShoppingText } from "@/lib/parseShoppingText";
-import { type MasterProduct } from "@/lib/shoppingData";
+import {
+  findExactProductMatch,
+  findExistingShoppingItem,
+  findFuzzyProductMatch,
+} from "@/lib/shoppingMatch";
+import { type MasterProduct, type ShoppingItem } from "@/lib/shoppingData";
 import ErrorBanner from "@/components/ErrorBanner";
 
 export type ImportItem = {
@@ -11,6 +16,7 @@ export type ImportItem = {
   name: string;
   qty: number;
   matchedProduct: MasterProduct | null;
+  suggestion: MasterProduct | null;
 };
 
 export type ImportTarget = "shopping" | "arsenal" | "both";
@@ -21,9 +27,11 @@ const TARGET_OPTIONS: { value: ImportTarget; label: string }[] = [
   { value: "both", label: "🔄 גם וגם" },
 ];
 
-function findMatch(products: MasterProduct[], name: string): MasterProduct | null {
-  const key = name.trim().toLowerCase();
-  return products.find((product) => product.name.trim().toLowerCase() === key) ?? null;
+function resolveMatch(products: MasterProduct[], name: string): Pick<ImportItem, "matchedProduct" | "suggestion"> {
+  const matchedProduct = findExactProductMatch(products, name);
+  if (matchedProduct) return { matchedProduct, suggestion: null };
+  const fuzzy = findFuzzyProductMatch(products, name);
+  return { matchedProduct: null, suggestion: fuzzy?.product ?? null };
 }
 
 function unmatchedBadge(target: ImportTarget): string {
@@ -32,14 +40,30 @@ function unmatchedBadge(target: ImportTarget): string {
   return "מוצר חדש - יתווסף לארסנל";
 }
 
+function statusLabel(
+  item: ImportItem,
+  activeShoppingItems: ShoppingItem[],
+  target: ImportTarget
+): { text: string; tone: "emerald" | "sky" | "amber" } {
+  const inArsenal = Boolean(item.matchedProduct);
+  const inShopping = Boolean(findExistingShoppingItem(item.matchedProduct, item.name, activeShoppingItems));
+
+  if (inArsenal && inShopping) return { text: "כבר קיים בארסנל וגם ברשימת הקניות", tone: "sky" };
+  if (inShopping) return { text: "קיים ברשימת הקניות בלבד", tone: "sky" };
+  if (inArsenal) return { text: "קיים בארסנל בלבד", tone: "emerald" };
+  return { text: unmatchedBadge(target), tone: "amber" };
+}
+
 type View = "paste" | "preview";
 
 export default function WhatsAppImportModal({
   products,
+  activeShoppingItems,
   onClose,
   onConfirm,
 }: {
   products: MasterProduct[];
+  activeShoppingItems: ShoppingItem[];
   onClose: () => void;
   onConfirm: (items: ImportItem[], target: ImportTarget) => Promise<string | null>;
 }) {
@@ -57,7 +81,7 @@ export default function WhatsAppImportModal({
         id: crypto.randomUUID(),
         name: line.name,
         qty: line.qty,
-        matchedProduct: findMatch(products, line.name),
+        ...resolveMatch(products, line.name),
       }))
     );
     setError(null);
@@ -66,10 +90,22 @@ export default function WhatsAppImportModal({
 
   function updateName(id: string, name: string) {
     setItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, name, ...resolveMatch(products, name) } : item))
+    );
+  }
+
+  function acceptSuggestion(id: string) {
+    setItems((prev) =>
       prev.map((item) =>
-        item.id === id ? { ...item, name, matchedProduct: findMatch(products, name) } : item
+        item.id === id && item.suggestion
+          ? { ...item, name: item.suggestion.name, matchedProduct: item.suggestion, suggestion: null }
+          : item
       )
     );
+  }
+
+  function dismissSuggestion(id: string) {
+    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, suggestion: null } : item)));
   }
 
   function changeQty(id: string, delta: number) {
@@ -194,59 +230,90 @@ export default function WhatsAppImportModal({
                     זוהו {items.length} מוצרים. אפשר לערוך שם/כמות או להסיר לפני האישור.
                   </p>
                   <ul className="flex flex-col gap-1.5">
-                    {items.map((item) => (
-                      <li
-                        key={item.id}
-                        className="flex items-center gap-2 rounded-xl border border-stone-200 bg-white p-2 dark:border-stone-700 dark:bg-stone-900"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <input
-                            type="text"
-                            value={item.name}
-                            onChange={(event) => updateName(item.id, event.target.value)}
-                            className="w-full min-w-0 bg-transparent text-sm text-stone-800 outline-none dark:text-stone-100"
-                          />
-                          <span
-                            className={`text-[11px] ${
-                              item.matchedProduct
-                                ? "text-emerald-600 dark:text-emerald-400"
-                                : "text-amber-600 dark:text-amber-400"
-                            }`}
-                          >
-                            {item.matchedProduct ? "קיים בארסנל" : unmatchedBadge(target)}
-                          </span>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => changeQty(item.id, -1)}
-                            aria-label="הפחתת כמות"
-                            className="flex h-6 w-6 items-center justify-center rounded-full bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-stone-800 dark:text-amber-400 dark:hover:bg-stone-700"
-                          >
-                            <Minus className="h-3 w-3" />
-                          </button>
-                          <span className="w-4 text-center text-sm font-semibold tabular-nums">
-                            {item.qty}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => changeQty(item.id, 1)}
-                            aria-label="הוספת כמות"
-                            className="flex h-6 w-6 items-center justify-center rounded-full bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-stone-800 dark:text-amber-400 dark:hover:bg-stone-700"
-                          >
-                            <Plus className="h-3 w-3" />
-                          </button>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeItem(item.id)}
-                          aria-label="הסרה מהרשימה"
-                          className="shrink-0 rounded-full p-1 text-stone-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30"
+                    {items.map((item) => {
+                      const status = statusLabel(item, activeShoppingItems, target);
+                      return (
+                        <li
+                          key={item.id}
+                          className="flex flex-col gap-1.5 rounded-xl border border-stone-200 bg-white p-2 dark:border-stone-700 dark:bg-stone-900"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </li>
-                    ))}
+                          <div className="flex items-center gap-2">
+                            <div className="min-w-0 flex-1">
+                              <input
+                                type="text"
+                                value={item.name}
+                                onChange={(event) => updateName(item.id, event.target.value)}
+                                className="w-full min-w-0 bg-transparent text-sm text-stone-800 outline-none dark:text-stone-100"
+                              />
+                              <span
+                                className={`text-[11px] ${
+                                  status.tone === "emerald"
+                                    ? "text-emerald-600 dark:text-emerald-400"
+                                    : status.tone === "sky"
+                                      ? "text-sky-600 dark:text-sky-400"
+                                      : "text-amber-600 dark:text-amber-400"
+                                }`}
+                              >
+                                {status.text}
+                              </span>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => changeQty(item.id, -1)}
+                                aria-label="הפחתת כמות"
+                                className="flex h-6 w-6 items-center justify-center rounded-full bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-stone-800 dark:text-amber-400 dark:hover:bg-stone-700"
+                              >
+                                <Minus className="h-3 w-3" />
+                              </button>
+                              <span className="w-4 text-center text-sm font-semibold tabular-nums">
+                                {item.qty}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => changeQty(item.id, 1)}
+                                aria-label="הוספת כמות"
+                                className="flex h-6 w-6 items-center justify-center rounded-full bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-stone-800 dark:text-amber-400 dark:hover:bg-stone-700"
+                              >
+                                <Plus className="h-3 w-3" />
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeItem(item.id)}
+                              aria-label="הסרה מהרשימה"
+                              className="shrink-0 rounded-full p-1 text-stone-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+
+                          {item.suggestion && (
+                            <div className="flex items-center gap-2 rounded-lg bg-sky-50 px-2 py-1.5 text-xs text-sky-800 dark:bg-sky-950/30 dark:text-sky-300">
+                              <span className="min-w-0 flex-1">
+                                האם התכוונת ל&quot;{item.suggestion.name}&quot;?
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => acceptSuggestion(item.id)}
+                                className="flex shrink-0 items-center gap-1 rounded-full bg-sky-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-sky-700"
+                              >
+                                <Check className="h-3 w-3" />
+                                כן
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => dismissSuggestion(item.id)}
+                                aria-label="התעלמות מההצעה"
+                                className="shrink-0 rounded-full p-1 text-sky-500 hover:bg-sky-100 dark:hover:bg-sky-900/40"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </>
               )}
