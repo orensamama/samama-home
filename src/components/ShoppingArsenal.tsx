@@ -7,7 +7,7 @@ import { useOptimisticRows } from "@/lib/useOptimisticRows";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
-import WhatsAppImportModal, { type ImportItem } from "@/components/WhatsAppImportModal";
+import WhatsAppImportModal, { type ImportItem, type ImportTarget } from "@/components/WhatsAppImportModal";
 import {
   groupByCategory,
   OTHER_CATEGORY,
@@ -99,23 +99,28 @@ export default function ShoppingArsenal() {
     refetchShopping();
   }
 
-  async function handleImportConfirm(importItems: ImportItem[]): Promise<string | null> {
-    // Items that already match an Arsenal product can be shown in the
-    // list immediately -- no server round-trip needed to know their
-    // product_id/category. Genuinely new products only get a card once
-    // master_products is refetched below, since there's nothing to
-    // optimistically render yet.
-    for (const item of importItems) {
-      if (item.matchedProduct) {
-        optimisticShopping.add({
-          id: `temp-${crypto.randomUUID()}`,
-          product_id: item.matchedProduct.id,
-          title: item.matchedProduct.name,
-          category: item.matchedProduct.category,
-          completed: false,
-          in_cart: true,
-          qty: item.qty,
-        });
+  async function handleImportConfirm(importItems: ImportItem[], target: ImportTarget): Promise<string | null> {
+    const addsToShoppingList = target !== "arsenal";
+    const addsToArsenal = target !== "shopping";
+
+    // Items that already match an Arsenal product, and are headed for the
+    // live list, can be shown there immediately -- no server round-trip
+    // needed to know their product_id/category. Genuinely new products
+    // only get a card once master_products is refetched below, since
+    // there's nothing to optimistically render yet.
+    if (addsToShoppingList) {
+      for (const item of importItems) {
+        if (item.matchedProduct) {
+          optimisticShopping.add({
+            id: `temp-${crypto.randomUUID()}`,
+            product_id: item.matchedProduct.id,
+            title: item.matchedProduct.name,
+            category: item.matchedProduct.category,
+            completed: false,
+            in_cart: true,
+            qty: item.qty,
+          });
+        }
       }
     }
 
@@ -124,7 +129,9 @@ export default function ShoppingArsenal() {
       let productId = item.matchedProduct?.id ?? null;
       let category = item.matchedProduct?.category ?? OTHER_CATEGORY;
 
-      if (!productId) {
+      // "רק לקניות בסופר": one-off items stay off the Arsenal entirely --
+      // only a matched (already-existing) product gets linked.
+      if (!productId && addsToArsenal) {
         const { data, error: err } = await supabase
           .from("master_products")
           .insert({ name: item.name, category: OTHER_CATEGORY })
@@ -143,10 +150,12 @@ export default function ShoppingArsenal() {
         category = data.category;
       }
 
+      if (!addsToShoppingList) continue;
+
       const { error: err } = await supabase.from("shopping").insert({
         product_id: productId,
         title: item.name,
-        category,
+        category: productId ? category : null,
         qty: item.qty,
         added_by: "Shared",
       });
@@ -156,8 +165,8 @@ export default function ShoppingArsenal() {
       }
     }
 
-    await refetchProducts();
-    await refetchShopping();
+    if (addsToArsenal) await refetchProducts();
+    if (addsToShoppingList) await refetchShopping();
     return hadError ? "חלק מהמוצרים לא נוספו עקב שגיאה. בדקו את הרשימה ונסו שוב." : null;
   }
 

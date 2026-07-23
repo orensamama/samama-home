@@ -13,9 +13,23 @@ export type ImportItem = {
   matchedProduct: MasterProduct | null;
 };
 
+export type ImportTarget = "shopping" | "arsenal" | "both";
+
+const TARGET_OPTIONS: { value: ImportTarget; label: string }[] = [
+  { value: "shopping", label: "🛒 רק לקניות בסופר" },
+  { value: "arsenal", label: "📦 רק לארסנל" },
+  { value: "both", label: "🔄 גם וגם" },
+];
+
 function findMatch(products: MasterProduct[], name: string): MasterProduct | null {
   const key = name.trim().toLowerCase();
   return products.find((product) => product.name.trim().toLowerCase() === key) ?? null;
+}
+
+function unmatchedBadge(target: ImportTarget): string {
+  if (target === "shopping") return "חד-פעמי (לא יישמר בארסנל)";
+  if (target === "arsenal") return "ייווצר בארסנל";
+  return "מוצר חדש - יתווסף לארסנל";
 }
 
 type View = "paste" | "preview";
@@ -27,11 +41,12 @@ export default function WhatsAppImportModal({
 }: {
   products: MasterProduct[];
   onClose: () => void;
-  onConfirm: (items: ImportItem[]) => Promise<string | null>;
+  onConfirm: (items: ImportItem[], target: ImportTarget) => Promise<string | null>;
 }) {
   const [view, setView] = useState<View>("paste");
   const [text, setText] = useState("");
   const [items, setItems] = useState<ImportItem[]>([]);
+  const [target, setTarget] = useState<ImportTarget>("shopping");
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,7 +87,7 @@ export default function WhatsAppImportModal({
     if (validItems.length === 0 || confirming) return;
     setConfirming(true);
     setError(null);
-    const message = await onConfirm(validItems);
+    const message = await onConfirm(validItems, target);
     setConfirming(false);
     if (message) {
       setError(message);
@@ -80,6 +95,9 @@ export default function WhatsAppImportModal({
     }
     onClose();
   }
+
+  const confirmLabel =
+    target === "arsenal" ? `שמירה בארסנל (${items.length})` : `הוספה לרשימה (${items.length})`;
 
   return (
     <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 sm:items-center">
@@ -144,6 +162,28 @@ export default function WhatsAppImportModal({
             <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
               {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
+              <div className="flex flex-col gap-1.5">
+                <p className="text-xs font-medium text-stone-500 dark:text-stone-400">
+                  לאן להוסיף את הפריטים?
+                </p>
+                <div className="grid grid-cols-3 gap-1.5 rounded-2xl bg-amber-50 p-1 dark:bg-stone-800">
+                  {TARGET_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setTarget(option.value)}
+                      className={`rounded-xl px-1.5 py-2 text-[11px] font-medium leading-tight transition-colors sm:text-xs ${
+                        target === option.value
+                          ? "bg-white text-amber-700 shadow-sm dark:bg-stone-700 dark:text-amber-400"
+                          : "text-stone-500 dark:text-stone-400"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {items.length === 0 ? (
                 <p className="rounded-2xl border border-dashed border-amber-200 p-6 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
                   לא זוהו מוצרים בטקסט. חיזרו אחורה ונסו שוב.
@@ -173,7 +213,7 @@ export default function WhatsAppImportModal({
                                 : "text-amber-600 dark:text-amber-400"
                             }`}
                           >
-                            {item.matchedProduct ? "קיים בארסנל" : "מוצר חדש"}
+                            {item.matchedProduct ? "קיים בארסנל" : unmatchedBadge(target)}
                           </span>
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
@@ -219,7 +259,7 @@ export default function WhatsAppImportModal({
                 disabled={items.length === 0 || confirming}
                 className="w-full rounded-xl bg-amber-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-600 disabled:opacity-50"
               >
-                {confirming ? "מוסיף לרשימה…" : `הוספה לרשימה (${items.length})`}
+                {confirming ? "מוסיף…" : confirmLabel}
               </button>
             </div>
           </>
