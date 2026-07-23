@@ -1,14 +1,16 @@
 "use client";
 
 import { useMemo, useState, type FormEvent } from "react";
-import { Check, Minus, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { Check, MessageCircle, Minus, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { useOptimisticRows } from "@/lib/useOptimisticRows";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
+import WhatsAppImportModal, { type ImportItem } from "@/components/WhatsAppImportModal";
 import {
   groupByCategory,
+  OTHER_CATEGORY,
   SHOPPING_CATEGORIES,
   type MasterProduct,
   type ShoppingItem,
@@ -30,6 +32,7 @@ export default function ShoppingArsenal() {
   const [editMode, setEditMode] = useState(false);
   const [renamingCategory, setRenamingCategory] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [showImport, setShowImport] = useState(false);
 
   // Map lookup instead of an .find() per product per render.
   const activeByProductId = useMemo(() => {
@@ -94,6 +97,68 @@ export default function ShoppingArsenal() {
       return;
     }
     refetchShopping();
+  }
+
+  async function handleImportConfirm(importItems: ImportItem[]): Promise<string | null> {
+    // Items that already match an Arsenal product can be shown in the
+    // list immediately -- no server round-trip needed to know their
+    // product_id/category. Genuinely new products only get a card once
+    // master_products is refetched below, since there's nothing to
+    // optimistically render yet.
+    for (const item of importItems) {
+      if (item.matchedProduct) {
+        optimisticShopping.add({
+          id: `temp-${crypto.randomUUID()}`,
+          product_id: item.matchedProduct.id,
+          title: item.matchedProduct.name,
+          category: item.matchedProduct.category,
+          completed: false,
+          in_cart: true,
+          qty: item.qty,
+        });
+      }
+    }
+
+    let hadError = false;
+    for (const item of importItems) {
+      let productId = item.matchedProduct?.id ?? null;
+      let category = item.matchedProduct?.category ?? OTHER_CATEGORY;
+
+      if (!productId) {
+        const { data, error: err } = await supabase
+          .from("master_products")
+          .insert({ name: item.name, category: OTHER_CATEGORY })
+          .select()
+          .single();
+        if (err) {
+          logSupabaseError("יצירת מוצר מייבוא וואטסאפ", err);
+          hadError = true;
+          continue;
+        }
+        if (!data) {
+          hadError = true;
+          continue;
+        }
+        productId = data.id;
+        category = data.category;
+      }
+
+      const { error: err } = await supabase.from("shopping").insert({
+        product_id: productId,
+        title: item.name,
+        category,
+        qty: item.qty,
+        added_by: "Shared",
+      });
+      if (err) {
+        logSupabaseError("הוספת מוצר מייבוא וואטסאפ", err);
+        hadError = true;
+      }
+    }
+
+    await refetchProducts();
+    await refetchShopping();
+    return hadError ? "חלק מהמוצרים לא נוספו עקב שגיאה. בדקו את הרשימה ונסו שוב." : null;
   }
 
   async function handleAddProduct(event: FormEvent) {
@@ -182,6 +247,15 @@ export default function ShoppingArsenal() {
           {editMode ? "סיום" : "עריכה"}
         </button>
       </div>
+
+      <button
+        type="button"
+        onClick={() => setShowImport(true)}
+        className="flex items-center justify-center gap-1.5 rounded-xl border border-dashed border-emerald-300 bg-emerald-50/60 px-3 py-2.5 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 dark:border-emerald-900/50 dark:bg-emerald-950/20 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
+      >
+        <MessageCircle className="h-4 w-4" />
+        הדבקה מוואטסאפ / ייבוא מהיר
+      </button>
 
       <div className="relative">
         <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
@@ -359,6 +433,14 @@ export default function ShoppingArsenal() {
             )}
           </div>
         ))
+      )}
+
+      {showImport && (
+        <WhatsAppImportModal
+          products={products}
+          onClose={() => setShowImport(false)}
+          onConfirm={handleImportConfirm}
+        />
       )}
     </div>
   );

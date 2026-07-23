@@ -26,6 +26,10 @@ export function useOptimisticRows<T extends { id: string }>(serverRows: T[]) {
     setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...changes } : row)));
   }
 
+  function add(row: T) {
+    setRows((prev) => [row, ...prev]);
+  }
+
   function remove(id: string) {
     setRows((prev) => prev.filter((row) => row.id !== id));
   }
@@ -34,5 +38,5 @@ export function useOptimisticRows<T extends { id: string }>(serverRows: T[]) {
     setRows(serverRows);
   }
 
-  return { rows, patch, remove, reset };
+  return { rows, patch, add, remove, reset };
 }
