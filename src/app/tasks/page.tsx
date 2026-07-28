@@ -10,10 +10,18 @@ import ArchivedTaskCard from "@/components/ArchivedTaskCard";
 import TaskFormModal, { type TaskFormValues } from "@/components/TaskFormModal";
 import KitGenerator, { type KitItem, type NewKitItem, type TemplateGroup } from "@/components/KitGenerator";
 import ErrorBanner from "@/components/ErrorBanner";
+import ShareMenu from "@/components/ShareMenu";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
-import { FOR_MEMBER_OPTIONS, sortTasks, type Assignee, type ForMember, type Task } from "@/lib/taskData";
+import {
+  FOR_MEMBER_OPTIONS,
+  formatTasksForShare,
+  sortTasks,
+  type Assignee,
+  type ForMember,
+  type Task,
+} from "@/lib/taskData";
 
 const TABS: { value: Assignee; label: string }[] = [
   { value: "Shared", label: "משותף" },
@@ -100,6 +108,11 @@ export default function TasksPage() {
 
   const hasAnyActiveContent = standaloneTasks.length > 0 || kitGroups.length > 0;
   const standaloneDoneCount = standaloneTasks.filter((task) => task.status === "done").length;
+  const activeTabLabel = TABS.find((tab) => tab.value === activeTab)?.label ?? "משימות";
+  const tasksShareText = useMemo(
+    () => formatTasksForShare(standaloneTasks, activeTabLabel),
+    [standaloneTasks, activeTabLabel]
+  );
 
   const exitSelectionMode = useCallback(() => {
     setSelectionMode(false);
@@ -378,6 +391,12 @@ export default function TasksPage() {
                 צור רשימה מקיט
               </button>
             </div>
+
+            {standaloneTasks.length > 0 && (
+              <div className="flex justify-end">
+                <ShareMenu text={tasksShareText} label="שיתוף המשימות" />
+              </div>
+            )}
 
             {!selectionMode ? (
               <div className="grid grid-cols-2 gap-2">

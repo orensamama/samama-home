@@ -5,10 +5,13 @@ import { Check, Minus, Plus, Trash2 } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { useOptimisticRows } from "@/lib/useOptimisticRows";
 import { upsertShoppingItem } from "@/lib/shoppingActions";
+import { enqueue, isNetworkError, runWithQueueFallback } from "@/lib/syncQueue";
+import { findExistingShoppingItem } from "@/lib/shoppingMatch";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
-import { groupByCategory, type ShoppingItem } from "@/lib/shoppingData";
+import ShareMenu from "@/components/ShareMenu";
+import { formatShoppingListForShare, groupByCategory, type ShoppingItem } from "@/lib/shoppingData";
 
 export default function LiveShoppingList() {
   const { rows: serverItems, refetch } = useSupabaseTable<ShoppingItem>("shopping", "*", {
@@ -25,19 +28,23 @@ export default function LiveShoppingList() {
   const pending = activeItems.filter((item) => !item.completed);
   const completed = activeItems.filter((item) => item.completed);
   const grouped = useMemo(() => groupByCategory(pending), [pending]);
+  const shareText = useMemo(() => formatShoppingListForShare(grouped), [grouped]);
 
   async function toggleCompleted(item: ShoppingItem) {
     setError(null);
-    const { error: err } = await supabase
-      .from("shopping")
-      .update({ completed: !item.completed })
-      .eq("id", item.id);
+    const nextCompleted = !item.completed;
+    optimistic.patch(item.id, { completed: nextCompleted });
+    const { queued, error: err } = await runWithQueueFallback(
+      { kind: "update", table: "shopping", match: { id: item.id }, values: { completed: nextCompleted } },
+      () => supabase.from("shopping").update({ completed: nextCompleted }).eq("id", item.id)
+    );
     if (err) {
       logSupabaseError("סימון פריט קניות", err);
       setError(friendlyErrorMessage(err));
+      optimistic.reset();
       return;
     }
-    refetch();
+    if (!queued) refetch();
   }
 
   async function changeQty(item: ShoppingItem, delta: number) {
@@ -46,26 +53,32 @@ export default function LiveShoppingList() {
 
     if (nextQty <= 0) {
       optimistic.remove(item.id);
-      const { error: err } = await supabase.from("shopping").delete().eq("id", item.id);
+      const { queued, error: err } = await runWithQueueFallback(
+        { kind: "delete", table: "shopping", match: { id: item.id } },
+        () => supabase.from("shopping").delete().eq("id", item.id)
+      );
       if (err) {
         logSupabaseError("הסרת פריט מהרשימה", err);
         setError(friendlyErrorMessage(err));
         optimistic.reset();
         return;
       }
-      refetch();
+      if (!queued) refetch();
       return;
     }
 
     optimistic.patch(item.id, { qty: nextQty });
-    const { error: err } = await supabase.from("shopping").update({ qty: nextQty }).eq("id", item.id);
+    const { queued, error: err } = await runWithQueueFallback(
+      { kind: "update", table: "shopping", match: { id: item.id }, values: { qty: nextQty } },
+      () => supabase.from("shopping").update({ qty: nextQty }).eq("id", item.id)
+    );
     if (err) {
       logSupabaseError("עדכון כמות", err);
       setError(friendlyErrorMessage(err));
       optimistic.reset();
       return;
     }
-    refetch();
+    if (!queued) refetch();
   }
 
   async function handleAdd(event: FormEvent) {
@@ -74,43 +87,85 @@ export default function LiveShoppingList() {
     if (!trimmed || submitting) return;
     setSubmitting(true);
     setError(null);
+
     // Merges into an existing active row with the same title instead of
     // inserting a duplicate line (e.g. re-typing the same quick-add item).
     const { data, error: err } = await upsertShoppingItem({ productId: null, title: trimmed, category: null, qty: 1 });
     if (err) {
-      logSupabaseError("הוספת פריט קניות", err);
-      setError(friendlyErrorMessage(err));
-      setSubmitting(false);
-      return;
+      if (isNetworkError(err)) {
+        // Offline: apply a best-effort local guess now (merge into a
+        // matching row if we can already see one, otherwise a new temp
+        // row), and queue the *same* upsert RPC so the server does the
+        // real, authoritative merge-or-create once back online.
+        const existing = findExistingShoppingItem(null, trimmed, optimistic.rows);
+        if (existing) {
+          optimistic.patch(existing.id, { qty: existing.qty + 1 });
+        } else {
+          optimistic.add({
+            id: `temp-${crypto.randomUUID()}`,
+            product_id: null,
+            title: trimmed,
+            category: null,
+            completed: false,
+            in_cart: true,
+            qty: 1,
+          });
+        }
+        enqueue({
+          kind: "rpc",
+          fn: "upsert_shopping_item",
+          args: { p_product_id: null, p_title: trimmed, p_category: null, p_qty: 1, p_added_by: "Shared" },
+        });
+      } else {
+        logSupabaseError("הוספת פריט קניות", err);
+        setError(friendlyErrorMessage(err));
+        setSubmitting(false);
+        return;
+      }
+    } else {
+      if (data) optimistic.upsert(data);
+      await refetch();
     }
-    if (data) optimistic.upsert(data);
     setNewTitle("");
-    await refetch();
     setSubmitting(false);
   }
 
   async function remove(id: string) {
     setError(null);
-    const { error: err } = await supabase.from("shopping").delete().eq("id", id);
+    optimistic.remove(id);
+    const { queued, error: err } = await runWithQueueFallback(
+      { kind: "delete", table: "shopping", match: { id } },
+      () => supabase.from("shopping").delete().eq("id", id)
+    );
     if (err) {
       logSupabaseError("מחיקת פריט קניות", err);
       setError(friendlyErrorMessage(err));
+      optimistic.reset();
       return;
     }
-    refetch();
+    if (!queued) refetch();
   }
 
   async function clearCompleted() {
     const ids = completed.map((item) => item.id);
     if (ids.length === 0) return;
     setError(null);
+    for (const id of ids) optimistic.patch(id, { in_cart: false });
     const { error: err } = await supabase.from("shopping").update({ in_cart: false }).in("id", ids);
     if (err) {
-      logSupabaseError("ניקוי פריטים שנקנו", err);
-      setError(friendlyErrorMessage(err));
-      return;
+      if (isNetworkError(err)) {
+        for (const id of ids) {
+          enqueue({ kind: "update", table: "shopping", match: { id }, values: { in_cart: false } });
+        }
+      } else {
+        logSupabaseError("ניקוי פריטים שנקנו", err);
+        setError(friendlyErrorMessage(err));
+        optimistic.reset();
+        return;
+      }
+    } else {
+      refetch();
     }
-    refetch();
   }
 
   return (
@@ -134,6 +189,12 @@ export default function LiveShoppingList() {
           <Plus className="h-5 w-5" />
         </button>
       </form>
+
+      {pending.length > 0 && (
+        <div className="flex justify-end">
+          <ShareMenu text={shareText} label="שיתוף הרשימה" />
+        </div>
+      )}
 
       {activeItems.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">

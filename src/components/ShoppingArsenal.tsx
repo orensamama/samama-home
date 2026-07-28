@@ -9,6 +9,7 @@ import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
 import WhatsAppImportModal, { type ImportItem, type ImportTarget } from "@/components/WhatsAppImportModal";
 import { upsertShoppingItem } from "@/lib/shoppingActions";
+import { enqueue, isNetworkError, runWithQueueFallback } from "@/lib/syncQueue";
 import {
   groupByCategory,
   OTHER_CATEGORY,
@@ -67,12 +68,45 @@ export default function ShoppingArsenal() {
       qty: product.default_qty,
     });
     if (err) {
-      logSupabaseError("הוספת פריט מהארסנל", err);
-      setError(friendlyErrorMessage(err));
-      return;
+      if (isNetworkError(err)) {
+        // Offline: apply a best-effort local guess (merge if we can
+        // already see an active row for this product, else a new temp
+        // row), and queue the same upsert RPC for the real merge-or-
+        // create once back online.
+        const existing = activeByProductId.get(product.id);
+        if (existing) {
+          optimisticShopping.patch(existing.id, { qty: existing.qty + product.default_qty });
+        } else {
+          optimisticShopping.add({
+            id: `temp-${crypto.randomUUID()}`,
+            product_id: product.id,
+            title: product.name,
+            category: product.category,
+            completed: false,
+            in_cart: true,
+            qty: product.default_qty,
+          });
+        }
+        enqueue({
+          kind: "rpc",
+          fn: "upsert_shopping_item",
+          args: {
+            p_product_id: product.id,
+            p_title: product.name,
+            p_category: product.category,
+            p_qty: product.default_qty,
+            p_added_by: "Shared",
+          },
+        });
+      } else {
+        logSupabaseError("הוספת פריט מהארסנל", err);
+        setError(friendlyErrorMessage(err));
+        return;
+      }
+    } else {
+      if (data) optimisticShopping.upsert(data);
+      refetchShopping();
     }
-    if (data) optimisticShopping.upsert(data);
-    refetchShopping();
   }
 
   async function changeQty(item: ShoppingItem, delta: number) {
@@ -81,26 +115,32 @@ export default function ShoppingArsenal() {
 
     if (nextQty <= 0) {
       optimisticShopping.remove(item.id);
-      const { error: err } = await supabase.from("shopping").delete().eq("id", item.id);
+      const { queued, error: err } = await runWithQueueFallback(
+        { kind: "delete", table: "shopping", match: { id: item.id } },
+        () => supabase.from("shopping").delete().eq("id", item.id)
+      );
       if (err) {
         logSupabaseError("הסרת פריט מהרשימה", err);
         setError(friendlyErrorMessage(err));
         optimisticShopping.reset();
         return;
       }
-      refetchShopping();
+      if (!queued) refetchShopping();
       return;
     }
 
     optimisticShopping.patch(item.id, { qty: nextQty });
-    const { error: err } = await supabase.from("shopping").update({ qty: nextQty }).eq("id", item.id);
+    const { queued, error: err } = await runWithQueueFallback(
+      { kind: "update", table: "shopping", match: { id: item.id }, values: { qty: nextQty } },
+      () => supabase.from("shopping").update({ qty: nextQty }).eq("id", item.id)
+    );
     if (err) {
       logSupabaseError("עדכון כמות", err);
       setError(friendlyErrorMessage(err));
       optimisticShopping.reset();
       return;
     }
-    refetchShopping();
+    if (!queued) refetchShopping();
   }
 
   async function handleImportConfirm(importItems: ImportItem[], target: ImportTarget): Promise<string | null> {
@@ -189,6 +229,21 @@ export default function ShoppingArsenal() {
       .eq("id", product.id);
     if (err) {
       logSupabaseError("עדכון שם מוצר", err);
+      setError(friendlyErrorMessage(err));
+      return;
+    }
+    refetchProducts();
+  }
+
+  async function handleChangeProductCategory(product: MasterProduct, newCategory: string) {
+    if (newCategory === product.category) return;
+    setError(null);
+    const { error: err } = await supabase
+      .from("master_products")
+      .update({ category: newCategory })
+      .eq("id", product.id);
+    if (err) {
+      logSupabaseError("העברת מוצר לקטגוריה אחרת", err);
       setError(friendlyErrorMessage(err));
       return;
     }
@@ -365,6 +420,21 @@ export default function ShoppingArsenal() {
                       }}
                       className="min-w-0 flex-1 bg-transparent text-sm text-stone-700 outline-none dark:text-stone-200"
                     />
+                    <select
+                      value={product.category}
+                      onChange={(event) => handleChangeProductCategory(product, event.target.value)}
+                      aria-label="העברה לקטגוריה אחרת"
+                      className="shrink-0 rounded-lg border border-stone-200 bg-transparent px-1.5 py-1 text-xs text-stone-600 outline-none focus:border-amber-400 dark:border-stone-700 dark:text-stone-300"
+                    >
+                      {(SHOPPING_CATEGORIES as readonly string[]).includes(product.category)
+                        ? null
+                        : <option value={product.category}>{product.category}</option>}
+                      {SHOPPING_CATEGORIES.map((category) => (
+                        <option key={category} value={category}>
+                          {category}
+                        </option>
+                      ))}
+                    </select>
                     <button
                       type="button"
                       onClick={() => handleDeleteProduct(product.id)}

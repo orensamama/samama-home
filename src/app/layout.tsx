@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import BottomNav from "@/components/BottomNav";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
+import OfflineSyncInit from "@/components/OfflineSyncInit";
 
 export const metadata: Metadata = {
   title: "בית סממה",
@@ -39,6 +40,7 @@ export default function RootLayout({
         <main className="flex-1 pb-20">{children}</main>
         <BottomNav />
         <ServiceWorkerRegister />
+        <OfflineSyncInit />
       </body>
     </html>
   );

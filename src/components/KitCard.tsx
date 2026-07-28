@@ -3,7 +3,8 @@
 import { memo, useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import TaskCard from "@/components/TaskCard";
-import type { Task } from "@/lib/taskData";
+import ShareMenu from "@/components/ShareMenu";
+import { formatTasksForShare, type Task } from "@/lib/taskData";
 
 type ItemActions = {
   selectionMode: boolean;
@@ -146,6 +147,7 @@ function KitCard({
         <div className="flex flex-col gap-3 border-t border-amber-100 p-3 dark:border-amber-950/30">
           {!selectionMode && (
             <div className="flex gap-2">
+              <ShareMenu text={formatTasksForShare(tasks, name)} label="שיתוף" />
               <button
                 type="button"
                 onClick={() => onClearCompleted(tasks)}

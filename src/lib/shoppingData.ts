@@ -54,3 +54,20 @@ export function groupByCategory<T extends { category: string | null }>(
     .map(([category, items]) => ({ category, items }))
     .sort((a, b) => orderIndex(a.category) - orderIndex(b.category));
 }
+
+/**
+ * Plain-text rendering of a grouped shopping list for sharing (WhatsApp,
+ * clipboard, etc). Uses WhatsApp's own *bold* markdown for category
+ * headers, since that's the most likely destination.
+ */
+export function formatShoppingListForShare(groups: { category: string; items: ShoppingItem[] }[]): string {
+  const lines: string[] = ["🛒 *רשימת קניות*", ""];
+  for (const group of groups) {
+    lines.push(`*${group.category}*`);
+    for (const item of group.items) {
+      lines.push(`- ${item.title}${item.qty > 1 ? ` x${item.qty}` : ""}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}

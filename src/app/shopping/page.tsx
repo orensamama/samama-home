@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import PageHeader from "@/components/PageHeader";
 import ShoppingArsenal from "@/components/ShoppingArsenal";
 import LiveShoppingList from "@/components/LiveShoppingList";
+import OfflineIndicator from "@/components/OfflineIndicator";
 
 type View = "prep" | "live";
 
@@ -47,6 +48,7 @@ export default function ShoppingPage() {
       <PageHeader title="קניות" subtitle="רשימת הקניות של המשפחה" />
 
       <div className="flex flex-col gap-4 p-4">
+        <OfflineIndicator />
         <Suspense fallback={null}>
           <ShoppingTabs />
         </Suspense>

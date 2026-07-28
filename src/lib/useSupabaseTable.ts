@@ -10,8 +10,35 @@ import { supabase } from "@/lib/supabaseClient";
 // fresh fetch still runs in the background to reconcile it.
 const rowsCache = new Map<string, unknown[]>();
 
+// Also mirrored to localStorage so the very first render after a full
+// page reload -- including a cold start with zero network connectivity,
+// e.g. opening the installed PWA icon in a supermarket with no signal --
+// still has last-known data instead of an empty list, before the
+// (silently failing, offline) fetch below even runs.
+const STORAGE_PREFIX = "samama-home:table-cache:";
+
 function cacheKey(table: string, select: string, orderBy?: { column: string; ascending?: boolean }) {
   return `${table}::${select}::${orderBy?.column ?? ""}::${orderBy?.ascending ?? ""}`;
+}
+
+function loadPersisted<T>(key: string): T[] | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_PREFIX + key);
+    return raw ? (JSON.parse(raw) as T[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function persist<T>(key: string, rows: T[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(rows));
+  } catch {
+    // Storage full/unavailable -- the in-memory cache above still covers
+    // this session, it just won't survive a reload.
+  }
 }
 
 /**
@@ -27,8 +54,10 @@ export function useSupabaseTable<T>(
   orderBy?: { column: string; ascending?: boolean }
 ) {
   const key = cacheKey(table, select, orderBy);
-  const [rows, setRows] = useState<T[]>(() => (rowsCache.get(key) as T[] | undefined) ?? []);
-  const [loading, setLoading] = useState(() => !rowsCache.has(key));
+  const [rows, setRows] = useState<T[]>(
+    () => (rowsCache.get(key) as T[] | undefined) ?? loadPersisted<T>(key) ?? []
+  );
+  const [loading, setLoading] = useState(() => !rowsCache.has(key) && loadPersisted<T>(key) === undefined);
   const isMountedRef = useRef(true);
 
   const load = useCallback(async () => {
@@ -40,6 +69,7 @@ export function useSupabaseTable<T>(
     if (!isMountedRef.current) return;
     if (!error && data) {
       rowsCache.set(key, data as T[]);
+      persist(key, data as T[]);
       setRows(data as T[]);
     }
     setLoading(false);

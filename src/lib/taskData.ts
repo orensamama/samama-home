@@ -145,3 +145,14 @@ export function sortTasks(tasks: Task[]) {
     return a.created_at.localeCompare(b.created_at);
   });
 }
+
+/** Plain-text checklist rendering of a task list for sharing (WhatsApp, clipboard, etc). */
+export function formatTasksForShare(tasks: Task[], title: string): string {
+  const lines: string[] = [`📋 *${title}*`, ""];
+  for (const task of tasks) {
+    const box = task.status === "done" ? "✅" : "⬜";
+    const dueSuffix = task.due_date && task.status !== "done" ? ` (${formatDueDate(task.due_date)})` : "";
+    lines.push(`${box} ${task.title}${dueSuffix}`);
+  }
+  return lines.join("\n").trim();
+}
