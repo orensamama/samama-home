@@ -61,6 +61,15 @@ export function buildGoogleCalendarUrl(event: FamilyEvent) {
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
+/** True once the event's date is strictly before today -- today itself still counts as upcoming. */
+export function isPastEvent(dateStr: string): boolean {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const eventDate = new Date(dateStr);
+  eventDate.setHours(0, 0, 0, 0);
+  return eventDate < today;
+}
+
 export function formatCurrency(amount: number) {
   return new Intl.NumberFormat("he-IL", {
     style: "currency",

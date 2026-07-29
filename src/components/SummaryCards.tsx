@@ -3,12 +3,23 @@
 import Link from "next/link";
 import { ListChecks, ShoppingCart } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
+import { SkeletonGrid } from "@/components/Skeleton";
 import { isDueToday, type Task } from "@/lib/taskData";
 import type { ShoppingItem } from "@/lib/shoppingData";
 
 export default function SummaryCards() {
-  const { rows: tasks } = useSupabaseTable<Task>("tasks");
-  const { rows: shopping } = useSupabaseTable<ShoppingItem>("shopping");
+  const { rows: tasks, loading: tasksLoading } = useSupabaseTable<Task>("tasks");
+  // Same table+select+orderBy as ShoppingArsenal/LiveShoppingList, so all
+  // three share one cached fetch instead of each re-querying "shopping" on
+  // its own when the user switches tabs.
+  const { rows: shopping, loading: shoppingLoading } = useSupabaseTable<ShoppingItem>("shopping", "*", {
+    column: "created_at",
+    ascending: true,
+  });
+
+  if ((tasksLoading && tasks.length === 0) || (shoppingLoading && shopping.length === 0)) {
+    return <SkeletonGrid />;
+  }
 
   const cards = [
     {

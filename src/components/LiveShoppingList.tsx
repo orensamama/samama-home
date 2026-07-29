@@ -11,10 +11,11 @@ import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
 import ShareMenu from "@/components/ShareMenu";
+import { SkeletonList } from "@/components/Skeleton";
 import { formatShoppingListForShare, groupByCategory, type ShoppingItem } from "@/lib/shoppingData";
 
 export default function LiveShoppingList() {
-  const { rows: serverItems, refetch } = useSupabaseTable<ShoppingItem>("shopping", "*", {
+  const { rows: serverItems, loading, refetch } = useSupabaseTable<ShoppingItem>("shopping", "*", {
     column: "created_at",
     ascending: true,
   });
@@ -196,7 +197,9 @@ export default function LiveShoppingList() {
         </div>
       )}
 
-      {activeItems.length === 0 ? (
+      {loading && activeItems.length === 0 ? (
+        <SkeletonList count={3} />
+      ) : activeItems.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
           הרשימה ריקה. הוסיפו פריטים כאן או עברו ל&quot;הכנת רשימה&quot; כדי לבחור מהארסנל.
         </div>

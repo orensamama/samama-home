@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Calendar, CalendarDays, Check, Copy, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import ErrorBanner from "@/components/ErrorBanner";
@@ -10,16 +10,20 @@ import EventFormModal, { type EventFormValues } from "@/components/EventFormModa
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
-import { buildGoogleCalendarUrl, formatDate, formatTime, type FamilyEvent } from "@/lib/familyData";
+import { buildGoogleCalendarUrl, formatDate, formatTime, isPastEvent, type FamilyEvent } from "@/lib/familyData";
+import { SkeletonList } from "@/components/Skeleton";
 
 type View = "list" | "week" | "month";
 
 export default function EventsPage() {
-  const { rows: events, refetch } = useSupabaseTable<FamilyEvent>(
+  const { rows: events, loading, refetch } = useSupabaseTable<FamilyEvent>(
     "events",
     "id, title, date:event_date, time, location, notes, image_url",
     { column: "event_date", ascending: true }
   );
+  // The calendars (week/month) still need every event, past included, to
+  // browse previous periods -- only the flat list is "upcoming events".
+  const upcomingEvents = useMemo(() => events.filter((event) => !isPastEvent(event.date)), [events]);
   const [view, setView] = useState<View>("list");
   const [showForm, setShowForm] = useState(false);
   const [editingEvent, setEditingEvent] = useState<FamilyEvent | null>(null);
@@ -165,13 +169,19 @@ export default function EventsPage() {
               הוספת אירוע
             </button>
 
-            {events.length === 0 ? (
+            {loading && events.length === 0 ? (
+              <SkeletonList count={3} />
+            ) : events.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
                 אין עדיין אירועים. הוסיפו את האירוע הראשון!
               </div>
+            ) : upcomingEvents.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
+                אין אירועים קרובים - כל האירועים הקיימים כבר עברו.
+              </div>
             ) : (
               <ul className="flex flex-col gap-2">
-                {events.map((event) => (
+                {upcomingEvents.map((event) => (
                   <li
                     key={event.id}
                     className="flex items-start gap-3 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900"

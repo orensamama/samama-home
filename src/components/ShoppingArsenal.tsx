@@ -10,6 +10,7 @@ import ErrorBanner from "@/components/ErrorBanner";
 import WhatsAppImportModal, { type ImportItem, type ImportTarget } from "@/components/WhatsAppImportModal";
 import { upsertShoppingItem } from "@/lib/shoppingActions";
 import { enqueue, isNetworkError, runWithQueueFallback } from "@/lib/syncQueue";
+import { SkeletonList } from "@/components/Skeleton";
 import {
   groupByCategory,
   OTHER_CATEGORY,
@@ -19,12 +20,18 @@ import {
 } from "@/lib/shoppingData";
 
 export default function ShoppingArsenal() {
-  const { rows: products, refetch: refetchProducts } = useSupabaseTable<MasterProduct>(
-    "master_products",
-    "*",
-    { column: "name", ascending: true }
-  );
-  const { rows: shoppingItems, refetch: refetchShopping } = useSupabaseTable<ShoppingItem>("shopping");
+  const {
+    rows: products,
+    loading: productsLoading,
+    refetch: refetchProducts,
+  } = useSupabaseTable<MasterProduct>("master_products", "*", { column: "name", ascending: true });
+  // Same table+select+orderBy as LiveShoppingList/SummaryCards, so all
+  // three share one cached fetch instead of each re-querying "shopping"
+  // on its own when the user switches tabs.
+  const { rows: shoppingItems, refetch: refetchShopping } = useSupabaseTable<ShoppingItem>("shopping", "*", {
+    column: "created_at",
+    ascending: true,
+  });
   const optimisticShopping = useOptimisticRows(shoppingItems);
 
   const [newName, setNewName] = useState("");
@@ -366,7 +373,9 @@ export default function ShoppingArsenal() {
         </div>
       </form>
 
-      {products.length === 0 ? (
+      {productsLoading && products.length === 0 ? (
+        <SkeletonList count={4} itemClassName="h-11" />
+      ) : products.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
           הארסנל ריק. הוסיפו מוצר ראשון למעלה!
         </div>

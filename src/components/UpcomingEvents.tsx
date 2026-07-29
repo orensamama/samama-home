@@ -6,18 +6,19 @@ import { CalendarDays, Pencil } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
-import { formatDate, formatTime, type FamilyEvent } from "@/lib/familyData";
+import { formatDate, formatTime, isPastEvent, type FamilyEvent } from "@/lib/familyData";
 import EventFormModal, { type EventFormValues } from "@/components/EventFormModal";
+import { SkeletonList } from "@/components/Skeleton";
 
 export default function UpcomingEvents() {
-  const { rows: events, refetch } = useSupabaseTable<FamilyEvent>(
+  const { rows: events, loading, refetch } = useSupabaseTable<FamilyEvent>(
     "events",
     "id, title, date:event_date, time, location, notes, image_url",
     { column: "event_date", ascending: true }
   );
   const [editingEvent, setEditingEvent] = useState<FamilyEvent | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const upcoming = events.slice(0, 3);
+  const upcoming = events.filter((event) => !isPastEvent(event.date)).slice(0, 3);
 
   async function handleFormSubmit(values: EventFormValues) {
     if (!editingEvent) return;
@@ -58,7 +59,9 @@ export default function UpcomingEvents() {
         </Link>
       </div>
 
-      {upcoming.length === 0 ? (
+      {loading && events.length === 0 ? (
+        <SkeletonList count={2} itemClassName="h-[60px]" />
+      ) : upcoming.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-amber-200 p-6 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
           אין אירועים קרובים כרגע.
         </div>
