@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronLeft, ChevronRight, MapPin } from "lucide-react";
-import { formatTime, HEBREW_WEEKDAY_NAMES, toISODate, type FamilyEvent } from "@/lib/familyData";
+import { formatDateRange, formatTime, HEBREW_WEEKDAY_NAMES, toISODate, type FamilyEvent } from "@/lib/familyData";
 
 const MONTH_FORMATTER = new Intl.DateTimeFormat("he-IL", { month: "long", year: "numeric" });
 const WEEKDAY_SHORT = ["א", "ב", "ג", "ד", "ה", "ו", "ש"];
@@ -29,11 +29,19 @@ export default function MonthlyCalendar({ events }: { events: FamilyEvent[] }) {
   const days = getMonthGrid(year, month);
   const todayIso = toISODate(today);
 
+  // Multi-day events get an entry under every day they span, so they read
+  // as a continuous run of marked days rather than only their start date.
   const eventsByDate = new Map<string, FamilyEvent[]>();
   for (const event of events) {
-    const list = eventsByDate.get(event.date) ?? [];
-    list.push(event);
-    eventsByDate.set(event.date, list);
+    const cursor = new Date(event.date);
+    const last = new Date(event.end_date ?? event.date);
+    while (cursor <= last) {
+      const iso = toISODate(cursor);
+      const list = eventsByDate.get(iso) ?? [];
+      list.push(event);
+      eventsByDate.set(iso, list);
+      cursor.setDate(cursor.getDate() + 1);
+    }
   }
 
   const selectedEvents = selectedIso ? (eventsByDate.get(selectedIso) ?? []) : [];
@@ -135,6 +143,9 @@ export default function MonthlyCalendar({ events }: { events: FamilyEvent[] }) {
                       </span>
                     )}
                   </p>
+                  {event.end_date && event.end_date !== event.date && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">{formatDateRange(event)}</p>
+                  )}
                   {event.location && (
                     <p className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
                       <MapPin className="h-3 w-3 shrink-0" />

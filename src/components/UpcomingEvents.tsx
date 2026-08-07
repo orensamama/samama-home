@@ -6,19 +6,19 @@ import { CalendarDays, Pencil } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
-import { formatDate, formatTime, isPastEvent, type FamilyEvent } from "@/lib/familyData";
+import { formatDateRange, formatTime, isPastEvent, type FamilyEvent } from "@/lib/familyData";
 import EventFormModal, { type EventFormValues } from "@/components/EventFormModal";
 import { SkeletonList } from "@/components/Skeleton";
 
 export default function UpcomingEvents() {
   const { rows: events, loading, refetch } = useSupabaseTable<FamilyEvent>(
     "events",
-    "id, title, date:event_date, time, location, notes, image_url",
+    "id, title, date:event_date, end_date, time, location, notes, image_url",
     { column: "event_date", ascending: true }
   );
   const [editingEvent, setEditingEvent] = useState<FamilyEvent | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const upcoming = events.filter((event) => !isPastEvent(event.date)).slice(0, 3);
+  const upcoming = events.filter((event) => !isPastEvent(event)).slice(0, 3);
 
   async function handleFormSubmit(values: EventFormValues) {
     if (!editingEvent) return;
@@ -28,6 +28,7 @@ export default function UpcomingEvents() {
       .update({
         title: values.title.trim(),
         event_date: values.date,
+        end_date: values.end_date || null,
         time: values.time || null,
         location: values.location.trim() || null,
         notes: values.notes.trim() || null,
@@ -80,7 +81,7 @@ export default function UpcomingEvents() {
                   {event.title}
                 </p>
                 <p className="text-xs text-stone-500 dark:text-stone-400">
-                  {formatDate(event.date)}
+                  {formatDateRange(event)}
                   {event.time && ` • ${formatTime(event.time)}`}
                 </p>
               </div>

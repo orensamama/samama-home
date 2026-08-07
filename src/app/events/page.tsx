@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Calendar, CalendarDays, Check, Copy, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
+import { CalendarDays, Check, Copy, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import ErrorBanner from "@/components/ErrorBanner";
 import WeeklyCalendar from "@/components/WeeklyCalendar";
@@ -10,7 +10,7 @@ import EventFormModal, { type EventFormValues } from "@/components/EventFormModa
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
-import { buildGoogleCalendarUrl, formatDate, formatTime, isPastEvent, type FamilyEvent } from "@/lib/familyData";
+import { formatDateRange, formatTime, isPastEvent, type FamilyEvent } from "@/lib/familyData";
 import { SkeletonList } from "@/components/Skeleton";
 
 type View = "list" | "week" | "month";
@@ -18,12 +18,12 @@ type View = "list" | "week" | "month";
 export default function EventsPage() {
   const { rows: events, loading, refetch } = useSupabaseTable<FamilyEvent>(
     "events",
-    "id, title, date:event_date, time, location, notes, image_url",
+    "id, title, date:event_date, end_date, time, location, notes, image_url",
     { column: "event_date", ascending: true }
   );
   // The calendars (week/month) still need every event, past included, to
   // browse previous periods -- only the flat list is "upcoming events".
-  const upcomingEvents = useMemo(() => events.filter((event) => !isPastEvent(event.date)), [events]);
+  const upcomingEvents = useMemo(() => events.filter((event) => !isPastEvent(event)), [events]);
   const [view, setView] = useState<View>("list");
   const [showForm, setShowForm] = useState(false);
   const [editingEvent, setEditingEvent] = useState<FamilyEvent | null>(null);
@@ -39,6 +39,7 @@ export default function EventsPage() {
     const payload = {
       title: values.title.trim(),
       event_date: values.date,
+      end_date: values.end_date || null,
       time: values.time || null,
       location: values.location.trim() || null,
       notes: values.notes.trim() || null,
@@ -203,7 +204,7 @@ export default function EventsPage() {
                         {event.title}
                       </p>
                       <p className="text-xs text-stone-500 dark:text-stone-400">
-                        {formatDate(event.date)}
+                        {formatDateRange(event)}
                         {event.time && ` • ${formatTime(event.time)}`}
                       </p>
                       {event.location && (
@@ -217,15 +218,6 @@ export default function EventsPage() {
                           {event.notes}
                         </p>
                       )}
-                      <a
-                        href={buildGoogleCalendarUrl(event)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-amber-600 hover:underline dark:text-amber-400"
-                      >
-                        <Calendar className="h-3 w-3" />
-                        הוסף ליומן
-                      </a>
                     </div>
                     <div className="flex shrink-0 flex-col gap-1">
                       <button

@@ -15,7 +15,7 @@ export async function GET() {
   const supabase = createClient(supabaseUrl, supabaseAnonKey);
   const { data: events, error } = await supabase
     .from("events")
-    .select("id, title, event_date, time, location, notes")
+    .select("id, title, event_date, end_date, time, location, notes")
     .order("event_date", { ascending: true });
 
   if (error) {
@@ -36,11 +36,22 @@ export async function GET() {
     lines.push("BEGIN:VEVENT");
     lines.push(`UID:${event.id}@samama-home`);
     lines.push(`DTSTAMP:${toUtcStamp(new Date())}`);
+    const hasRange = Boolean(event.end_date) && event.end_date !== event.event_date;
     if (event.time) {
       const timeCompact = String(event.time).replace(/:/g, "").slice(0, 6).padEnd(6, "0");
       lines.push(`DTSTART:${dateCompact}T${timeCompact}`);
+      if (hasRange) {
+        lines.push(`DTEND:${event.end_date.replaceAll("-", "")}T${timeCompact}`);
+      }
     } else {
       lines.push(`DTSTART;VALUE=DATE:${dateCompact}`);
+      if (hasRange) {
+        // All-day DTEND is exclusive per RFC 5545 -- the day after the
+        // last day, not the last day itself.
+        const exclusiveEnd = new Date(`${event.end_date}T00:00:00Z`);
+        exclusiveEnd.setUTCDate(exclusiveEnd.getUTCDate() + 1);
+        lines.push(`DTEND;VALUE=DATE:${exclusiveEnd.toISOString().slice(0, 10).replaceAll("-", "")}`);
+      }
     }
     lines.push(`SUMMARY:${escapeIcsText(event.title)}`);
     if (event.location) lines.push(`LOCATION:${escapeIcsText(event.location)}`);

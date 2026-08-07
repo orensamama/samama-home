@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useState } from "react";
-import { Archive, Check, ChevronDown, Pencil } from "lucide-react";
+import { Archive, Check, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import {
   ASSIGNEE_TAGS,
   STATUS_CYCLE,
@@ -22,6 +22,7 @@ function TaskCard({
   onToggleDone,
   onEdit,
   onArchive,
+  onDelete,
 }: {
   task: Task;
   showAssignee: boolean;
@@ -32,6 +33,10 @@ function TaskCard({
   onToggleDone: (task: Task) => void;
   onEdit: (task: Task) => void;
   onArchive: (task: Task) => void;
+  // Optional: a direct, one-step delete alongside the usual archive --
+  // used in Kit Mode where removing an item shouldn't require a trip
+  // through the archive.
+  onDelete?: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const urgency = URGENCY_LEVELS[task.urgency];
@@ -103,14 +108,25 @@ function TaskCard({
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>
-            <button
-              type="button"
-              onClick={() => onArchive(task)}
-              aria-label="העברה לארכיון"
-              className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
-            >
-              <Archive className="h-3.5 w-3.5" />
-            </button>
+            {onDelete ? (
+              <button
+                type="button"
+                onClick={() => onDelete(task.id)}
+                aria-label="מחיקה"
+                className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onArchive(task)}
+                aria-label="העברה לארכיון"
+                className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-300"
+              >
+                <Archive className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         )}
       </div>

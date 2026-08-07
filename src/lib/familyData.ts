@@ -3,7 +3,8 @@ export const DEFAULT_QUOTE = "לך יש אותי, לי יש אותך, לנו י�
 export type FamilyEvent = {
   id: string;
   title: string;
-  date: string; // ISO date, e.g. "2026-07-24"
+  date: string; // ISO date, e.g. "2026-07-24" -- first day
+  end_date: string | null; // ISO date, last day of a multi-day event; null means single-day
   time: string | null; // "HH:MM:SS" (Postgres time), or null if no time set
   location: string | null;
   notes: string | null;
@@ -32,42 +33,29 @@ export function formatTime(timeStr: string) {
   return timeStr.slice(0, 5);
 }
 
-/** Google Calendar "quick add" template link for a single event. */
-export function buildGoogleCalendarUrl(event: FamilyEvent) {
-  const dateCompact = event.date.replaceAll("-", "");
-  let dates: string;
-
-  if (event.time) {
-    const [hours, minutes] = event.time.split(":");
-    const start = new Date(`${event.date}T${event.time}`);
-    const end = new Date(start.getTime() + 60 * 60 * 1000);
-    const startCompact = `${dateCompact}T${hours}${minutes}00`;
-    const endCompact = `${toISODate(end).replaceAll("-", "")}T${String(end.getHours()).padStart(2, "0")}${String(end.getMinutes()).padStart(2, "0")}00`;
-    dates = `${startCompact}/${endCompact}`;
-  } else {
-    const nextDay = new Date(event.date);
-    nextDay.setDate(nextDay.getDate() + 1);
-    dates = `${dateCompact}/${toISODate(nextDay).replaceAll("-", "")}`;
-  }
-
-  const params = new URLSearchParams({
-    action: "TEMPLATE",
-    text: event.title,
-    dates,
-  });
-  if (event.location) params.set("location", event.location);
-  if (event.notes) params.set("details", event.notes);
-
-  return `https://calendar.google.com/calendar/render?${params.toString()}`;
-}
-
-/** True once the event's date is strictly before today -- today itself still counts as upcoming. */
-export function isPastEvent(dateStr: string): boolean {
+/**
+ * True once the event's LAST day (end_date if set, otherwise date) is
+ * strictly before today -- an ongoing multi-day event that started in the
+ * past but hasn't ended yet still counts as upcoming/current. Today
+ * itself still counts as upcoming.
+ */
+export function isPastEvent(event: Pick<FamilyEvent, "date" | "end_date">): boolean {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const eventDate = new Date(dateStr);
-  eventDate.setHours(0, 0, 0, 0);
-  return eventDate < today;
+  const lastDay = new Date(event.end_date ?? event.date);
+  lastDay.setHours(0, 0, 0, 0);
+  return lastDay < today;
+}
+
+/** Whether a (possibly multi-day) event covers the given ISO date. */
+export function eventOccursOnDate(event: Pick<FamilyEvent, "date" | "end_date">, iso: string): boolean {
+  return iso >= event.date && iso <= (event.end_date ?? event.date);
+}
+
+/** "24 ביולי" for a single-day event, "24 ביולי - 28 ביולי" for a range. */
+export function formatDateRange(event: Pick<FamilyEvent, "date" | "end_date">): string {
+  if (!event.end_date || event.end_date === event.date) return formatDate(event.date);
+  return `${formatDate(event.date)} - ${formatDate(event.end_date)}`;
 }
 
 export function formatCurrency(amount: number) {

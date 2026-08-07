@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 import { ChevronLeft, ChevronRight, MapPin } from "lucide-react";
-import { HEBREW_WEEKDAY_NAMES, getWeekDates, toISODate, type FamilyEvent } from "@/lib/familyData";
+import {
+  HEBREW_WEEKDAY_NAMES,
+  eventOccursOnDate,
+  formatDateRange,
+  getWeekDates,
+  toISODate,
+  type FamilyEvent,
+} from "@/lib/familyData";
 
 const RANGE_FORMATTER = new Intl.DateTimeFormat("he-IL", { day: "numeric", month: "short" });
 
@@ -49,7 +56,7 @@ export default function WeeklyCalendar({ events }: { events: FamilyEvent[] }) {
         {weekDates.map((date) => {
           const iso = toISODate(date);
           const isToday = iso === todayIso;
-          const dayEvents = events.filter((event) => event.date === iso);
+          const dayEvents = events.filter((event) => eventOccursOnDate(event, iso));
 
           return (
             <div
@@ -78,6 +85,9 @@ export default function WeeklyCalendar({ events }: { events: FamilyEvent[] }) {
                       className="rounded-lg bg-amber-50/70 px-2 py-1.5 text-sm text-stone-700 dark:bg-stone-950/40 dark:text-stone-200"
                     >
                       <p className="font-medium">{event.title}</p>
+                      {event.end_date && event.end_date !== event.date && (
+                        <p className="text-xs text-amber-600 dark:text-amber-400">{formatDateRange(event)}</p>
+                      )}
                       {event.location && (
                         <p className="flex items-center gap-1 text-xs text-stone-500 dark:text-stone-400">
                           <MapPin className="h-3 w-3 shrink-0" />

@@ -30,9 +30,11 @@ const TABS: { value: Assignee; label: string }[] = [
 ];
 
 type View = "active" | "archive";
+type ContentMode = "tasks" | "kits";
 
 export default function TasksPage() {
   const { rows: allTasks, refetch } = useSupabaseTable<Task>("tasks");
+  const [contentMode, setContentMode] = useState<ContentMode>("tasks");
   const [activeTab, setActiveTab] = useState<Assignee>("Shared");
   const [view, setView] = useState<View>("active");
   const [showForm, setShowForm] = useState(false);
@@ -64,17 +66,23 @@ export default function TasksPage() {
       : assigneeFiltered.filter((task) => task.for_member === forMemberFilter);
   }, [allTasks, isMasterTab, activeTab, forMemberFilter]);
 
+  // Standalone tasks exclude kit items entirely -- kits are managed in
+  // their own "קיטים" mode below (Kit Mode), never mixed into this list.
   const standaloneTasks = useMemo(
     () => sortTasks(tabTasks.filter((task) => !task.archived && !task.kit_instance_id)),
     [tabTasks]
   );
   const archivedTasks = useMemo(() => tabTasks.filter((task) => task.archived), [tabTasks]);
 
-  const kitGroups = useMemo(
+  // Kits are always Shared (never assigned to Oren/Orit individually), so
+  // Kit Mode intentionally ignores activeTab/forMemberFilter and derives
+  // straight from allTasks -- every active kit shows there regardless of
+  // whatever tab was last selected in Tasks Mode.
+  const allKitGroups = useMemo(
     () =>
       Array.from(
-        tabTasks
-          .filter((task) => !task.archived && task.kit_instance_id)
+        allTasks
+          .filter((task) => !task.archived && !task.is_template && task.kit_instance_id)
           .reduce((groups, task) => {
             const key = task.kit_instance_id as string;
             const list = groups.get(key) ?? [];
@@ -87,7 +95,7 @@ export default function TasksPage() {
         name: tasks[0]?.template_name ?? "קיט",
         tasks: sortTasks(tasks),
       })),
-    [tabTasks]
+    [allTasks]
   );
 
   const templateGroups: TemplateGroup[] = useMemo(
@@ -106,7 +114,6 @@ export default function TasksPage() {
     [allTasks]
   );
 
-  const hasAnyActiveContent = standaloneTasks.length > 0 || kitGroups.length > 0;
   const standaloneDoneCount = standaloneTasks.filter((task) => task.status === "done").length;
   const activeTabLabel = TABS.find((tab) => tab.value === activeTab)?.label ?? "משימות";
   const tasksShareText = useMemo(
@@ -253,6 +260,82 @@ export default function TasksPage() {
     [refetch]
   );
 
+  const handleAddKitItem = useCallback(
+    async (kitInstanceId: string, kitName: string, title: string, category: string) => {
+      const { error } = await supabase.from("tasks").insert({
+        title,
+        assignee: "Shared" as const,
+        urgency: "medium" as const,
+        status: "todo" as const,
+        is_personal: false,
+        is_template: false,
+        template_name: kitName,
+        kit_instance_id: kitInstanceId,
+        category: category || null,
+      });
+      if (error) {
+        logSupabaseError("הוספת פריט לקיט", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
+
+  const handleRenameKit = useCallback(
+    async (kitInstanceId: string, newNameRaw: string) => {
+      const newName = newNameRaw.trim();
+      if (!newName) return;
+      const { error } = await supabase
+        .from("tasks")
+        .update({ template_name: newName })
+        .eq("kit_instance_id", kitInstanceId);
+      if (error) {
+        logSupabaseError("שינוי שם קיט", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
+
+  const handleRenameKitCategory = useCallback(
+    async (kitInstanceId: string, oldCategory: string, newCategoryRaw: string) => {
+      const newCategory = newCategoryRaw.trim();
+      if (newCategory === oldCategory) return;
+      // "כללי" is a display fallback for a null category, not a real
+      // stored value -- match/clear it accordingly rather than as text.
+      let query = supabase
+        .from("tasks")
+        .update({ category: newCategory || null })
+        .eq("kit_instance_id", kitInstanceId);
+      query = oldCategory === "כללי" ? query.is("category", null) : query.eq("category", oldCategory);
+      const { error } = await query;
+      if (error) {
+        logSupabaseError("שינוי שם קטגוריה בקיט", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
+
+  const handleDeleteKitItem = useCallback(
+    async (id: string) => {
+      const { error } = await supabase.from("tasks").delete().eq("id", id);
+      if (error) {
+        logSupabaseError("מחיקת פריט מקיט", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
+
   const handleDeleteSelected = useCallback(async () => {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
@@ -322,6 +405,75 @@ export default function TasksPage() {
       <div className="flex flex-col gap-3 p-4">
         {pageError && <ErrorBanner message={pageError} onDismiss={() => setPageError(null)} />}
 
+        {/* Kits are managed entirely separately from the day-to-day task
+            list -- activating a kit never spills its items into "משימות
+            שוטפות"; this is the top-level switch between the two. */}
+        <div className="grid grid-cols-2 gap-1.5 rounded-2xl bg-amber-50 p-1 dark:bg-stone-900">
+          <button
+            type="button"
+            onClick={() => setContentMode("tasks")}
+            className={`rounded-xl px-2 py-2 text-sm font-medium transition-colors ${
+              contentMode === "tasks"
+                ? "bg-white text-amber-700 shadow-sm dark:bg-stone-800 dark:text-amber-400"
+                : "text-stone-500 dark:text-stone-400"
+            }`}
+          >
+            משימות
+          </button>
+          <button
+            type="button"
+            onClick={() => setContentMode("kits")}
+            className={`rounded-xl px-2 py-2 text-sm font-medium transition-colors ${
+              contentMode === "kits"
+                ? "bg-white text-amber-700 shadow-sm dark:bg-stone-800 dark:text-amber-400"
+                : "text-stone-500 dark:text-stone-400"
+            }`}
+          >
+            קיטים{allKitGroups.length > 0 ? ` (${allKitGroups.length})` : ""}
+          </button>
+        </div>
+
+        {contentMode === "kits" ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowTemplates(true)}
+              className="flex items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
+            >
+              <LayoutTemplate className="h-4 w-4" />
+              צור/טען קיט
+            </button>
+
+            {allKitGroups.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
+                אין קיטים פעילים. צרו קיט חדש כדי להתחיל!
+              </div>
+            ) : (
+              allKitGroups.map((kit) => (
+                <KitCard
+                  key={kit.instanceId}
+                  instanceId={kit.instanceId}
+                  name={kit.name}
+                  tasks={kit.tasks}
+                  selectionMode={false}
+                  selectedIds={selectedIds}
+                  onToggleSelect={toggleSelect}
+                  onCycleStatus={handleCycleStatus}
+                  onToggleDone={handleToggleDone}
+                  onEdit={startEdit}
+                  onArchiveItem={handleArchive}
+                  onClearCompleted={handleClearCompleted}
+                  onDeleteKit={handleDeleteKit}
+                  onRenameKit={handleRenameKit}
+                  onRenameCategory={handleRenameKitCategory}
+                  onAddItem={handleAddKitItem}
+                  onDeleteItem={handleDeleteKitItem}
+                />
+              ))
+            )}
+          </>
+        ) : (
+        <>
         <div className="grid grid-cols-3 gap-1.5 rounded-2xl bg-amber-50 p-1 dark:bg-stone-900">
           {TABS.map((tab) => (
             <button
@@ -369,28 +521,18 @@ export default function TasksPage() {
 
         {view === "active" ? (
           <>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingTask(null);
-                  setFormError(null);
-                  setShowForm(true);
-                }}
-                className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
-              >
-                <Plus className="h-4 w-4" />
-                הוספת משימה
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowTemplates(true)}
-                className="flex flex-1 items-center justify-center gap-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-900/50 dark:bg-stone-900 dark:text-amber-400 dark:hover:bg-stone-800"
-              >
-                <LayoutTemplate className="h-4 w-4" />
-                צור רשימה מקיט
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingTask(null);
+                setFormError(null);
+                setShowForm(true);
+              }}
+              className="flex items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
+            >
+              <Plus className="h-4 w-4" />
+              הוספת משימה
+            </button>
 
             {standaloneTasks.length > 0 && (
               <div className="flex justify-end">
@@ -438,67 +580,41 @@ export default function TasksPage() {
               </div>
             )}
 
-            {!hasAnyActiveContent ? (
+            {standaloneTasks.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
-                אין משימות כאן עדיין. הוסיפו משימה או טענו קיט!
+                אין משימות כאן עדיין. הוסיפו משימה!
               </div>
             ) : (
-              <>
-                {kitGroups.length > 0 && (
-                  <div className="flex flex-col gap-2">
-                    <h2 className="text-sm font-bold text-stone-700 dark:text-stone-200">קיטים פעילים</h2>
-                    {kitGroups.map((kit) => (
-                      <KitCard
-                        key={kit.instanceId}
-                        name={kit.name}
-                        tasks={kit.tasks}
-                        selectionMode={selectionMode}
-                        selectedIds={selectedIds}
-                        onToggleSelect={toggleSelect}
-                        onCycleStatus={handleCycleStatus}
-                        onToggleDone={handleToggleDone}
-                        onEdit={startEdit}
-                        onArchiveItem={handleArchive}
-                        onClearCompleted={handleClearCompleted}
-                        onDeleteKit={handleDeleteKit}
-                      />
-                    ))}
-                  </div>
-                )}
-
-                {standaloneTasks.length > 0 && (
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between">
-                      <h2 className="text-sm font-bold text-stone-700 dark:text-stone-200">משימות שוטפות</h2>
-                      {standaloneDoneCount > 0 && !selectionMode && (
-                        <button
-                          type="button"
-                          onClick={() => handleClearCompleted(standaloneTasks)}
-                          className="text-xs font-medium text-amber-600 hover:underline dark:text-amber-400"
-                        >
-                          נקה משימות שבוצעו
-                        </button>
-                      )}
-                    </div>
-                    <ul className="flex flex-col gap-2">
-                      {standaloneTasks.map((task) => (
-                        <TaskCard
-                          key={task.id}
-                          task={task}
-                          showAssignee={isMasterTab}
-                          selectionMode={selectionMode}
-                          selected={selectedIds.has(task.id)}
-                          onToggleSelect={toggleSelect}
-                          onCycleStatus={handleCycleStatus}
-                          onToggleDone={handleToggleDone}
-                          onEdit={startEdit}
-                          onArchive={handleArchive}
-                        />
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-bold text-stone-700 dark:text-stone-200">משימות שוטפות</h2>
+                  {standaloneDoneCount > 0 && !selectionMode && (
+                    <button
+                      type="button"
+                      onClick={() => handleClearCompleted(standaloneTasks)}
+                      className="text-xs font-medium text-amber-600 hover:underline dark:text-amber-400"
+                    >
+                      נקה משימות שבוצעו
+                    </button>
+                  )}
+                </div>
+                <ul className="flex flex-col gap-2">
+                  {standaloneTasks.map((task) => (
+                    <TaskCard
+                      key={task.id}
+                      task={task}
+                      showAssignee={isMasterTab}
+                      selectionMode={selectionMode}
+                      selected={selectedIds.has(task.id)}
+                      onToggleSelect={toggleSelect}
+                      onCycleStatus={handleCycleStatus}
+                      onToggleDone={handleToggleDone}
+                      onEdit={startEdit}
+                      onArchive={handleArchive}
+                    />
+                  ))}
+                </ul>
+              </div>
             )}
           </>
         ) : (
@@ -529,6 +645,8 @@ export default function TasksPage() {
               </ul>
             )}
           </>
+        )}
+        </>
         )}
       </div>
 

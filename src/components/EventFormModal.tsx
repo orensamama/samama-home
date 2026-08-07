@@ -11,6 +11,7 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export type EventFormValues = {
   title: string;
   date: string;
+  end_date: string;
   time: string;
   location: string;
   notes: string;
@@ -19,11 +20,12 @@ export type EventFormValues = {
 
 function toFormValues(event: FamilyEvent | null): EventFormValues {
   if (!event) {
-    return { title: "", date: "", time: "", location: "", notes: "", image_url: "" };
+    return { title: "", date: "", end_date: "", time: "", location: "", notes: "", image_url: "" };
   }
   return {
     title: event.title,
     date: event.date,
+    end_date: event.end_date && event.end_date !== event.date ? event.end_date : "",
     time: event.time ? event.time.slice(0, 5) : "",
     location: event.location ?? "",
     notes: event.notes ?? "",
@@ -52,6 +54,7 @@ export default function EventFormModal({
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (!values.title.trim() || !values.date || submitting) return;
+    if (values.end_date && values.end_date < values.date) return;
     setSubmitting(true);
     await onSubmit(values);
     setSubmitting(false);
@@ -132,6 +135,19 @@ export default function EventFormModal({
                   className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
                 />
               </div>
+            </div>
+
+            <div>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
+                תאריך סיום (לא חובה - לטווח תאריכים, למשל חופשה)
+              </p>
+              <input
+                type="date"
+                value={values.end_date}
+                min={values.date || undefined}
+                onChange={(event) => setValues((v) => ({ ...v, end_date: event.target.value }))}
+                className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
+              />
             </div>
 
             <div>
