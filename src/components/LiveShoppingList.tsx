@@ -46,6 +46,18 @@ export default function LiveShoppingList() {
       return;
     }
     if (!queued) refetch();
+
+    // Bought => it's back in the house: flip the product's home-inventory
+    // status from "נגמר" to "יש בבית". (Un-checking a purchase leaves the
+    // inventory alone -- we can't know whether it really ran out again.)
+    if (nextCompleted && item.product_id) {
+      const productId = item.product_id;
+      const { error: stockErr } = await runWithQueueFallback(
+        { kind: "update", table: "master_products", match: { id: productId }, values: { in_stock: true } },
+        () => supabase.from("master_products").update({ in_stock: true }).eq("id", productId)
+      );
+      if (stockErr) logSupabaseError("עדכון מלאי ביתי לאחר קנייה", stockErr);
+    }
   }
 
   async function changeQty(item: ShoppingItem, delta: number) {

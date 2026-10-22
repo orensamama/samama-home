@@ -3,6 +3,10 @@ export type MasterProduct = {
   name: string;
   category: string;
   default_qty: number;
+  // Home inventory status (migration 0015): true = "יש בבית", false =
+  // "נגמר". Read it as `in_stock !== false` so a DB that hasn't had the
+  // migration yet (column missing => undefined) still counts as in stock.
+  in_stock: boolean;
 };
 
 export type ShoppingItem = {

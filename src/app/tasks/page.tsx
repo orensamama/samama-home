@@ -6,6 +6,7 @@ import type { PostgrestError } from "@supabase/supabase-js";
 import PageHeader from "@/components/PageHeader";
 import TaskCard from "@/components/TaskCard";
 import KitCard from "@/components/KitCard";
+import KitTemplateCard from "@/components/KitTemplateCard";
 import ArchivedTaskCard from "@/components/ArchivedTaskCard";
 import TaskFormModal, { type TaskFormValues } from "@/components/TaskFormModal";
 import KitGenerator, { type KitItem, type NewKitItem, type TemplateGroup } from "@/components/KitGenerator";
@@ -40,6 +41,9 @@ export default function TasksPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
+  // Set when a saved kit's "הפעל קיט" button opens the generator straight
+  // into that kit; null opens the regular kit list.
+  const [templateToActivate, setTemplateToActivate] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -110,7 +114,14 @@ export default function TasksPage() {
             groups.set(key, list);
             return groups;
           }, new Map<string, Task[]>())
-      ).map(([name, tasks]) => ({ name, tasks })),
+      ).map(([name, tasks]) => ({
+        name,
+        // Stable order (not DB heap order, which shifts after every update)
+        // so inline-edited rows in a saved kit don't jump around.
+        tasks: [...tasks].sort(
+          (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)
+        ),
+      })),
     [allTasks]
   );
 
@@ -336,6 +347,100 @@ export default function TasksPage() {
     [refetch]
   );
 
+  // --- Saved kits (templates: is_template = true, keyed by template_name) ---
+
+  const handleRenameTemplate = useCallback(
+    async (oldName: string, newNameRaw: string) => {
+      const newName = newNameRaw.trim();
+      if (!newName || newName === oldName) return;
+      const { error } = await supabase
+        .from("tasks")
+        .update({ template_name: newName })
+        .eq("is_template", true)
+        .eq("template_name", oldName);
+      if (error) {
+        logSupabaseError("שינוי שם קיט שמור", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
+
+  const handleRenameTemplateCategory = useCallback(
+    async (kitName: string, oldCategory: string, newCategoryRaw: string) => {
+      const newCategory = newCategoryRaw.trim();
+      if (newCategory === oldCategory) return;
+      let query = supabase
+        .from("tasks")
+        .update({ category: newCategory || null })
+        .eq("is_template", true)
+        .eq("template_name", kitName);
+      query = oldCategory === "כללי" ? query.is("category", null) : query.eq("category", oldCategory);
+      const { error } = await query;
+      if (error) {
+        logSupabaseError("שינוי שם קטגוריה בקיט שמור", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
+
+  const handleAddTemplateItem = useCallback(
+    async (kitName: string, title: string, category: string) => {
+      const { error } = await supabase.from("tasks").insert({
+        title,
+        category: category || null,
+        assignee: "Shared" as const,
+        urgency: "medium" as const,
+        status: "todo" as const,
+        is_personal: false,
+        is_template: true,
+        template_name: kitName,
+      });
+      if (error) {
+        logSupabaseError("הוספת פריט לקיט שמור", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
+
+  const handleUpdateTemplateItem = useCallback(
+    async (id: string, patch: { title?: string; category?: string | null }) => {
+      const { error } = await supabase.from("tasks").update(patch).eq("id", id);
+      if (error) {
+        logSupabaseError("עדכון פריט בקיט שמור", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
+
+  const handleDeleteTemplate = useCallback(
+    async (kitName: string) => {
+      const { error } = await supabase
+        .from("tasks")
+        .delete()
+        .eq("is_template", true)
+        .eq("template_name", kitName);
+      if (error) {
+        logSupabaseError("מחיקת קיט שמור", error);
+        setPageError(friendlyErrorMessage(error));
+        return;
+      }
+      refetch();
+    },
+    [refetch]
+  );
+
   const handleDeleteSelected = useCallback(async () => {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
@@ -429,7 +534,7 @@ export default function TasksPage() {
                 : "text-stone-500 dark:text-stone-400"
             }`}
           >
-            קיטים{allKitGroups.length > 0 ? ` (${allKitGroups.length})` : ""}
+            קיטים{allKitGroups.length + templateGroups.length > 0 ? ` (${allKitGroups.length + templateGroups.length})` : ""}
           </button>
         </div>
 
@@ -437,40 +542,81 @@ export default function TasksPage() {
           <>
             <button
               type="button"
-              onClick={() => setShowTemplates(true)}
+              onClick={() => {
+                setTemplateToActivate(null);
+                setShowTemplates(true);
+              }}
               className="flex items-center justify-center gap-1 rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-600"
             >
               <LayoutTemplate className="h-4 w-4" />
-              צור/טען קיט
+              צור קיט חדש / טען קיט
             </button>
 
-            {allKitGroups.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-amber-200 p-8 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
-                אין קיטים פעילים. צרו קיט חדש כדי להתחיל!
-              </div>
-            ) : (
-              allKitGroups.map((kit) => (
-                <KitCard
-                  key={kit.instanceId}
-                  instanceId={kit.instanceId}
-                  name={kit.name}
-                  tasks={kit.tasks}
-                  selectionMode={false}
-                  selectedIds={selectedIds}
-                  onToggleSelect={toggleSelect}
-                  onCycleStatus={handleCycleStatus}
-                  onToggleDone={handleToggleDone}
-                  onEdit={startEdit}
-                  onArchiveItem={handleArchive}
-                  onClearCompleted={handleClearCompleted}
-                  onDeleteKit={handleDeleteKit}
-                  onRenameKit={handleRenameKit}
-                  onRenameCategory={handleRenameKitCategory}
-                  onAddItem={handleAddKitItem}
-                  onDeleteItem={handleDeleteKitItem}
-                />
-              ))
-            )}
+            {/* Active kits: loaded instances being checked off right now. */}
+            <div className="flex flex-col gap-2">
+              <h2 className="text-sm font-bold text-stone-700 dark:text-stone-200">
+                קיטים פעילים{allKitGroups.length > 0 ? ` (${allKitGroups.length})` : ""}
+              </h2>
+              {allKitGroups.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-amber-200 p-5 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
+                  אין קיט פעיל כרגע. הפעילו אחד מהקיטים השמורים למטה.
+                </div>
+              ) : (
+                allKitGroups.map((kit) => (
+                  <KitCard
+                    key={kit.instanceId}
+                    instanceId={kit.instanceId}
+                    name={kit.name}
+                    tasks={kit.tasks}
+                    selectionMode={false}
+                    selectedIds={selectedIds}
+                    onToggleSelect={toggleSelect}
+                    onCycleStatus={handleCycleStatus}
+                    onToggleDone={handleToggleDone}
+                    onEdit={startEdit}
+                    onArchiveItem={handleArchive}
+                    onClearCompleted={handleClearCompleted}
+                    onDeleteKit={handleDeleteKit}
+                    onRenameKit={handleRenameKit}
+                    onRenameCategory={handleRenameKitCategory}
+                    onAddItem={handleAddKitItem}
+                    onDeleteItem={handleDeleteKitItem}
+                  />
+                ))
+              )}
+            </div>
+
+            {/* Saved kits: the reusable definitions (is_template rows) the
+                family built -- previously only reachable through the load
+                dialog, which is why Kit Mode looked empty despite them. */}
+            <div className="flex flex-col gap-2">
+              <h2 className="text-sm font-bold text-stone-700 dark:text-stone-200">
+                הקיטים השמורים שלי{templateGroups.length > 0 ? ` (${templateGroups.length})` : ""}
+              </h2>
+              {templateGroups.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-amber-200 p-5 text-center text-sm text-stone-500 dark:border-amber-900/40 dark:text-stone-400">
+                  עדיין אין קיטים שמורים. צרו קיט חדש כדי לשמור אותו לשימוש חוזר.
+                </div>
+              ) : (
+                templateGroups.map((group) => (
+                  <KitTemplateCard
+                    key={group.name}
+                    name={group.name}
+                    tasks={group.tasks}
+                    onActivate={(name) => {
+                      setTemplateToActivate(name);
+                      setShowTemplates(true);
+                    }}
+                    onRename={handleRenameTemplate}
+                    onRenameCategory={handleRenameTemplateCategory}
+                    onAddItem={handleAddTemplateItem}
+                    onUpdateItem={handleUpdateTemplateItem}
+                    onDeleteItem={handleDeleteKitItem}
+                    onDeleteKit={handleDeleteTemplate}
+                  />
+                ))
+              )}
+            </div>
           </>
         ) : (
         <>
@@ -668,7 +814,11 @@ export default function TasksPage() {
       {showTemplates && (
         <KitGenerator
           templateGroups={templateGroups}
-          onClose={() => setShowTemplates(false)}
+          initialGroupName={templateToActivate}
+          onClose={() => {
+            setShowTemplates(false);
+            setTemplateToActivate(null);
+          }}
           onConfirm={handleConfirmKit}
           onCreateKit={handleCreateKit}
         />

@@ -11,15 +11,6 @@ export type FamilyEvent = {
   image_url: string | null;
 };
 
-export type ExpenseItem = {
-  id: string;
-  title: string;
-  amount: number;
-  amount_pending: boolean;
-  notes: string | null;
-  date: string; // ISO date, e.g. "2026-07-24"
-};
-
 export function formatDate(dateStr: string) {
   return new Intl.DateTimeFormat("he-IL", {
     weekday: "short",

@@ -1,0 +1,29 @@
+# Supabase CLI configuration for the local dev stack and `supabase link`.
+# See supabase/README.md for how migrations reach the live database.
+
+project_id = "samama-home"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+# Matches current hosted Supabase projects; `supabase link` syncs this with
+# the remote project's actual Postgres version.
+major_version = 17
+
+[db.migrations]
+enabled = true
+
+[studio]
+enabled = true
+port = 54323
+
+[storage]
+enabled = true
+file_size_limit = "50MiB"

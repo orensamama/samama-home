@@ -7,7 +7,8 @@ import {
   ListChecks,
   ShoppingCart,
   CalendarDays,
-  Wallet,
+  PiggyBank,
+  Refrigerator,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -15,7 +16,8 @@ const NAV_ITEMS = [
   { href: "/tasks", label: "משימות", icon: ListChecks },
   { href: "/shopping", label: "קניות", icon: ShoppingCart },
   { href: "/events", label: "אירועים", icon: CalendarDays },
-  { href: "/expenses", label: "הוצאות", icon: Wallet },
+  { href: "/inventory", label: "מלאי", icon: Refrigerator },
+  { href: "/budget", label: "כלכלה", icon: PiggyBank },
 ];
 
 export default function BottomNav() {
@@ -26,7 +28,7 @@ export default function BottomNav() {
       className="fixed inset-x-0 bottom-0 z-50 border-t border-amber-100 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur dark:border-amber-950/40 dark:bg-stone-950/95"
       aria-label="ניווט ראשי"
     >
-      <ul className="grid grid-cols-5">
+      <ul className="grid grid-cols-6">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
           const isActive = href === "/" ? pathname === "/" : pathname.startsWith(href);
           return (

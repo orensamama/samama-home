@@ -62,18 +62,25 @@ type View = "list" | "editItems" | "createKit";
 
 export default function KitGenerator({
   templateGroups,
+  initialGroupName,
   onClose,
   onConfirm,
   onCreateKit,
 }: {
   templateGroups: TemplateGroup[];
+  // When set, opens straight into that saved kit's item picker instead of
+  // the kit list (used by the "הפעל קיט" button in Kit Mode).
+  initialGroupName?: string | null;
   onClose: () => void;
   onConfirm: (kitName: string, items: KitItem[]) => Promise<PostgrestError | null>;
   onCreateKit: (kitName: string, items: NewKitItem[]) => Promise<PostgrestError | null>;
 }) {
-  const [view, setView] = useState<View>("list");
-  const [selectedGroup, setSelectedGroup] = useState<TemplateGroup | null>(null);
-  const [items, setItems] = useState<EditableItem[]>([]);
+  const initialGroup = initialGroupName
+    ? (templateGroups.find((group) => group.name === initialGroupName) ?? null)
+    : null;
+  const [view, setView] = useState<View>(initialGroup ? "editItems" : "list");
+  const [selectedGroup, setSelectedGroup] = useState<TemplateGroup | null>(initialGroup);
+  const [items, setItems] = useState<EditableItem[]>(() => (initialGroup ? toEditableItems(initialGroup) : []));
   const [newItemText, setNewItemText] = useState<Record<string, string>>({});
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
