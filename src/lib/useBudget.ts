@@ -40,6 +40,7 @@ export function useBudgetData() {
 
   const { refetch: refetchCategories } = categories;
   const { refetch: refetchMerchants } = merchants;
+  const { refetch: refetchExpenses } = expenses;
 
   const looksBroken =
     categories.error !== null || expenses.error !== null || merchants.error !== null || categories.rows.length === 0;
@@ -50,16 +51,19 @@ export function useBudgetData() {
     let cancelled = false;
     void ensureBudgetSetup().then((outcome) => {
       if (cancelled) return;
-      if (outcome.seeded) {
+      // Seeded, or the tables turned out fine (e.g. the repair SQL was just run):
+      // reload so any stale error state clears and the warning disappears.
+      if (outcome.seeded || outcome.ok) {
         refetchCategories();
         refetchMerchants();
+        refetchExpenses();
       }
       setResult(outcome);
     });
     return () => {
       cancelled = true;
     };
-  }, [needsCheck, nonce, refetchCategories, refetchMerchants]);
+  }, [needsCheck, nonce, refetchCategories, refetchMerchants, refetchExpenses]);
 
   const recheck = useCallback(() => {
     setResult(null);
