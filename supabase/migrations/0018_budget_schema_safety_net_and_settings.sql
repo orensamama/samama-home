@@ -1,0 +1,139 @@
+-- Safety net for the family-budget schema + app settings (family photo).
+--
+-- Why this exists: the budget tables were created by hand in the SQL Editor
+-- (the GitHub Action had no secrets), so what is actually in the live
+-- database may differ slightly from migrations 0016/0017 -- a missing column,
+-- a missing policy, a table that was never created. This file brings ANY such
+-- state up to the shape the app expects. It is idempotent and strictly
+-- additive: it only creates what is missing and never drops, truncates or
+-- rewrites existing data. The app can also copy this exact text to the
+-- clipboard (budget screen -> "העתק SQL לתיקון").
+
+-- ---------------------------------------------------------------------------
+-- budget_categories
+-- ---------------------------------------------------------------------------
+create table if not exists public.budget_categories (
+  id uuid primary key default gen_random_uuid(),
+  name text not null default '',
+  kind text not null default 'variable',
+  group_name text not null default 'כללי',
+  monthly_budget numeric(12, 2) not null default 0,
+  sort_order int not null default 0,
+  is_hidden boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table public.budget_categories add column if not exists name text not null default '';
+alter table public.budget_categories add column if not exists kind text not null default 'variable';
+alter table public.budget_categories add column if not exists group_name text not null default 'כללי';
+alter table public.budget_categories add column if not exists monthly_budget numeric(12, 2) not null default 0;
+alter table public.budget_categories add column if not exists sort_order int not null default 0;
+alter table public.budget_categories add column if not exists is_hidden boolean not null default false;
+
+alter table public.budget_categories enable row level security;
+drop policy if exists "budget_categories: anon full access" on public.budget_categories;
+create policy "budget_categories: anon full access" on public.budget_categories
+  for all to anon, authenticated using (true) with check (true);
+
+-- ---------------------------------------------------------------------------
+-- merchant_categories (store -> category memory)
+-- ---------------------------------------------------------------------------
+create table if not exists public.merchant_categories (
+  id uuid primary key default gen_random_uuid(),
+  store_key text not null default '',
+  store_name text not null default '',
+  category_id uuid references public.budget_categories(id) on delete cascade,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.merchant_categories add column if not exists store_key text not null default '';
+alter table public.merchant_categories add column if not exists store_name text not null default '';
+alter table public.merchant_categories add column if not exists category_id uuid references public.budget_categories(id) on delete cascade;
+alter table public.merchant_categories add column if not exists updated_at timestamptz not null default now();
+
+-- upsert(on conflict store_key) needs a unique index; tolerate pre-existing duplicates.
+do $$
+begin
+  create unique index if not exists merchant_categories_store_key_key on public.merchant_categories (store_key);
+exception when others then
+  raise notice 'merchant_categories.store_key unique index skipped: %', sqlerrm;
+end
+$$;
+
+alter table public.merchant_categories enable row level security;
+drop policy if exists "merchant_categories: anon full access" on public.merchant_categories;
+create policy "merchant_categories: anon full access" on public.merchant_categories
+  for all to anon, authenticated using (true) with check (true);
+
+-- ---------------------------------------------------------------------------
+-- expenses: the columns the budget screen reads and writes
+-- ---------------------------------------------------------------------------
+alter table public.expenses add column if not exists notes text;
+alter table public.expenses add column if not exists amount_pending boolean not null default false;
+alter table public.expenses add column if not exists category_id uuid references public.budget_categories(id) on delete set null;
+alter table public.expenses add column if not exists store text;
+alter table public.expenses add column if not exists receipt_url text;
+
+-- ---------------------------------------------------------------------------
+-- app_settings: small key/value store (family photo URL, ...)
+-- ---------------------------------------------------------------------------
+create table if not exists public.app_settings (
+  key text primary key,
+  value text,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.app_settings enable row level security;
+drop policy if exists "app_settings: anon full access" on public.app_settings;
+create policy "app_settings: anon full access" on public.app_settings
+  for all to anon, authenticated using (true) with check (true);
+
+-- ---------------------------------------------------------------------------
+-- Realtime for the new tables (skip ones already in the publication)
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  table_name text;
+begin
+  foreach table_name in array array['budget_categories', 'merchant_categories', 'app_settings'] loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = table_name
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', table_name);
+    end if;
+  end loop;
+end
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Storage buckets: receipt photos + the family photo (public, anon upload)
+-- ---------------------------------------------------------------------------
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values
+  ('receipt-images', 'receipt-images', true, 5242880, array['image/jpeg', 'image/png', 'image/webp']),
+  ('family-photo', 'family-photo', true, 5242880, array['image/jpeg', 'image/png', 'image/webp'])
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "receipt-images: public read" on storage.objects;
+create policy "receipt-images: public read" on storage.objects
+  for select to public using (bucket_id = 'receipt-images');
+drop policy if exists "receipt-images: anon upload" on storage.objects;
+create policy "receipt-images: anon upload" on storage.objects
+  for insert to anon, authenticated with check (bucket_id = 'receipt-images');
+drop policy if exists "receipt-images: anon delete" on storage.objects;
+create policy "receipt-images: anon delete" on storage.objects
+  for delete to anon, authenticated using (bucket_id = 'receipt-images');
+
+drop policy if exists "family-photo: public read" on storage.objects;
+create policy "family-photo: public read" on storage.objects
+  for select to public using (bucket_id = 'family-photo');
+drop policy if exists "family-photo: anon upload" on storage.objects;
+create policy "family-photo: anon upload" on storage.objects
+  for insert to anon, authenticated with check (bucket_id = 'family-photo');
+drop policy if exists "family-photo: anon delete" on storage.objects;
+create policy "family-photo: anon delete" on storage.objects
+  for delete to anon, authenticated using (bucket_id = 'family-photo');

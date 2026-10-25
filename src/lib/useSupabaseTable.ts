@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { PostgrestError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 
 // Module-level, so it survives unmount/remount (e.g. switching bottom-nav
@@ -58,6 +59,10 @@ export function useSupabaseTable<T>(
     () => (rowsCache.get(key) as T[] | undefined) ?? loadPersisted<T>(key) ?? []
   );
   const [loading, setLoading] = useState(() => !rowsCache.has(key) && loadPersisted<T>(key) === undefined);
+  // The last fetch's error (null when it succeeded) and whether any fetch has
+  // finished yet -- callers use these to tell "really empty" from "failed".
+  const [error, setError] = useState<PostgrestError | null>(null);
+  const [fetched, setFetched] = useState(false);
   const isMountedRef = useRef(true);
 
   const load = useCallback(async () => {
@@ -65,14 +70,16 @@ export function useSupabaseTable<T>(
     if (orderBy) {
       query = query.order(orderBy.column, { ascending: orderBy.ascending ?? true });
     }
-    const { data, error } = await query;
+    const { data, error: queryError } = await query;
     if (!isMountedRef.current) return;
-    if (!error && data) {
+    setError(queryError ?? null);
+    if (!queryError && data) {
       rowsCache.set(key, data as T[]);
       persist(key, data as T[]);
       setRows(data as T[]);
     }
     setLoading(false);
+    setFetched(true);
     // Depend on orderBy's primitive fields rather than the object itself --
     // callers often pass a fresh object literal each render, which would
     // otherwise recreate `load` (and resubscribe) on every render.
@@ -101,5 +108,5 @@ export function useSupabaseTable<T>(
     };
   }, [table, load]);
 
-  return { rows, loading, refetch: load };
+  return { rows, loading, error, fetched, refetch: load };
 }

@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "sync:setup-sql": "node scripts/sync-setup-sql.mjs",
     "db:link": "npx --yes supabase link",
     "db:baseline": "npx --yes supabase migration repair --status applied 0001 0002 0003 0004 0005 0006 0007 0008 0009 0010 0011",
     "db:push": "npx --yes supabase db push",

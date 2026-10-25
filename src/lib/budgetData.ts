@@ -38,11 +38,11 @@ export const CATEGORY_ORDER = { column: "sort_order", ascending: true } as const
 
 export const KIND_ORDER: BudgetKind[] = ["income", "fixed", "variable", "sinking"];
 
-export const KIND_META: Record<BudgetKind, { label: string; hint: string }> = {
-  income: { label: "הכנסות קבועות", hint: "מה נכנס אלינו כל חודש" },
-  fixed: { label: "הוצאות קבועות (\"שכח מזה\")", hint: "תשלומים קבועים שחוזרים כל חודש" },
-  variable: { label: "הוצאות משתנות (ניהול שוטף)", hint: "מה שאנחנו מנהלים יום-יום" },
-  sinking: { label: "הוצאות אחת לתקופה", hint: "חיסכון חודשי להוצאות גדולות (חופשות, חגים...)" },
+export const KIND_META: Record<BudgetKind, { label: string; short: string; hint: string }> = {
+  income: { label: "הכנסות קבועות", short: "הכנסות", hint: "מה נכנס אלינו כל חודש" },
+  fixed: { label: "הוצאות קבועות (\"שכח מזה\")", short: "הוצאות קבועות", hint: "תשלומים קבועים שחוזרים כל חודש" },
+  variable: { label: "הוצאות משתנות (ניהול שוטף)", short: "הוצאות משתנות", hint: "מה שאנחנו מנהלים יום-יום" },
+  sinking: { label: "הוצאות אחת לתקופה", short: "חיסכון לתקופה", hint: "חיסכון חודשי להוצאות גדולות (חופשות, חגים...)" },
 };
 
 // ---------------------------------------------------------------------------

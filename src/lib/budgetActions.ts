@@ -1,6 +1,7 @@
 import type { PostgrestError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import { logSupabaseError } from "@/lib/supabaseErrors";
+import { isNetworkError } from "@/lib/syncQueue";
 import {
   normalizeStoreKey,
   suggestMerchant,
@@ -87,39 +88,85 @@ export async function deleteMerchant(id: string) {
   return supabase.from("merchant_categories").delete().eq("id", id);
 }
 
-// --- first-run seeding ---------------------------------------------------
+// --- setup check + first-run seeding -------------------------------------
+
+export type SetupIssue = {
+  area: string;
+  message: string; // plain Hebrew, for the user
+  technical: string; // raw Postgres/PostgREST error, for the "details" view
+};
+
+export type SetupResult = { ok: boolean; seeded: boolean; issues: SetupIssue[] };
+
+function describeIssue(error: PostgrestError, table: string): SetupIssue {
+  const code = error.code ?? "";
+  let message: string;
+  if (code === "42P01" || code === "PGRST205") message = `הטבלה "${table}" לא קיימת במסד הנתונים`;
+  else if (code === "42703" || code === "PGRST204") message = `חסרה עמודה בטבלה "${table}"`;
+  else if (code === "42501") message = `אין הרשאה לקרוא/לכתוב בטבלה "${table}" (Row Level Security)`;
+  else message = `שגיאה בטבלה "${table}"`;
+  return { area: table, message, technical: `${code} ${error.message}`.trim() };
+}
 
 /**
- * Loads the family Excel base template when (and only when) the database has
- * no budget categories at all. Re-checks against the server right before
- * inserting, so a stale empty local cache or a second device can't cause a
- * duplicate seed. Returns true if it seeded.
+ * Makes sure the budget is usable, and says exactly what's wrong when it isn't:
+ *  1. probes the three tables/columns the budget reads and writes -- the live
+ *     database was set up by hand, so any of them may differ from the
+ *     migrations -- and reports each problem in plain language;
+ *  2. if the categories table is reachable but has no rows at all, FORCES the
+ *     Excel base template (and common stores) in, re-checking server-side first
+ *     so a stale local cache or a second device can't cause a duplicate seed.
+ * Network failures (offline) are not problems and report ok with nothing done.
  */
-export async function seedBudgetTemplateIfEmpty(): Promise<boolean> {
-  const { data: existing, error: checkError } = await supabase.from("budget_categories").select("id").limit(1);
-  if (checkError || !existing || existing.length > 0) return false;
+export async function ensureBudgetSetup(): Promise<SetupResult> {
+  const issues: SetupIssue[] = [];
 
-  const { data: inserted, error } = await supabase
+  const categories = await supabase
     .from("budget_categories")
-    .insert(BUDGET_TEMPLATE_ROWS)
-    .select("id, name");
-  if (error || !inserted) {
-    if (error) logSupabaseError("אכלוס תבנית תקציב ראשונית", error);
-    return false;
+    .select("id, name, kind, group_name, monthly_budget, sort_order")
+    .limit(1);
+  if (categories.error) {
+    if (isNetworkError(categories.error)) return { ok: true, seeded: false, issues: [] };
+    issues.push(describeIssue(categories.error, "budget_categories"));
   }
 
-  const idByName = new Map<string, string>(inserted.map((row: { id: string; name: string }) => [row.name, row.id]));
-  const merchantRows = DEFAULT_MERCHANTS.flatMap((merchant) => {
-    const categoryId = idByName.get(merchant.category);
-    return categoryId
-      ? [{ store_key: merchant.store_key, store_name: merchant.store_name, category_id: categoryId }]
-      : [];
-  });
-  if (merchantRows.length > 0) {
-    const { error: merchantError } = await supabase
-      .from("merchant_categories")
-      .upsert(merchantRows, { onConflict: "store_key", ignoreDuplicates: true });
-    if (merchantError) logSupabaseError("אכלוס חנויות ברירת מחדל", merchantError);
+  const merchants = await supabase.from("merchant_categories").select("id, store_key, store_name, category_id").limit(1);
+  if (merchants.error && !isNetworkError(merchants.error)) issues.push(describeIssue(merchants.error, "merchant_categories"));
+
+  const expenses = await supabase
+    .from("expenses")
+    .select("id, category_id, store, receipt_url, notes, amount_pending")
+    .limit(1);
+  if (expenses.error && !isNetworkError(expenses.error)) issues.push(describeIssue(expenses.error, "expenses"));
+
+  let seeded = false;
+  if (!categories.error && (categories.data?.length ?? 0) === 0) {
+    const { data: inserted, error } = await supabase
+      .from("budget_categories")
+      .insert(BUDGET_TEMPLATE_ROWS)
+      .select("id, name");
+    if (error || !inserted) {
+      if (error) {
+        logSupabaseError("אכלוס תבנית תקציב ראשונית", error);
+        issues.push({ ...describeIssue(error, "budget_categories"), message: "לא ניתן להוסיף את תבנית הבסיס לטבלת הקטגוריות" });
+      }
+    } else {
+      seeded = true;
+      const idByName = new Map<string, string>(inserted.map((row: { id: string; name: string }) => [row.name, row.id]));
+      const merchantRows = DEFAULT_MERCHANTS.flatMap((merchant) => {
+        const categoryId = idByName.get(merchant.category);
+        return categoryId
+          ? [{ store_key: merchant.store_key, store_name: merchant.store_name, category_id: categoryId }]
+          : [];
+      });
+      if (merchantRows.length > 0 && !merchants.error) {
+        const { error: merchantError } = await supabase
+          .from("merchant_categories")
+          .upsert(merchantRows, { onConflict: "store_key", ignoreDuplicates: true });
+        if (merchantError) logSupabaseError("אכלוס חנויות ברירת מחדל", merchantError);
+      }
+    }
   }
-  return true;
+
+  return { ok: issues.length === 0, seeded, issues };
 }

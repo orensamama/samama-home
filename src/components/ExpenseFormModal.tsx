@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState, type ChangeEvent, type FormEvent } from "react";
-import { Camera, Image as ImageIcon, ScanLine, Sparkles, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { Camera, Image as ImageIcon, Mic, ScanLine, Sparkles, Trash2, X } from "lucide-react";
 import ErrorBanner from "@/components/ErrorBanner";
 import CategorySelect from "@/components/CategorySelect";
 import { supabase } from "@/lib/supabaseClient";
+import { categoryNameForText, parseSpokenExpense } from "@/lib/spokenExpense";
 import {
   formatReceiptItems,
   parseReceiptText,
@@ -19,6 +20,34 @@ export type { ExpenseFormValues };
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const OCR_MAX_SIDE = 2000;
+
+// The Web Speech API isn't in TypeScript's DOM lib; only what we use is declared.
+type SpeechRecognitionResultLike = { isFinal: boolean; 0: { transcript: string } };
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: { results: ArrayLike<SpeechRecognitionResultLike> }) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
+function getSpeechRecognition(): SpeechRecognitionCtor | null {
+  const w = window as unknown as { SpeechRecognition?: SpeechRecognitionCtor; webkitSpeechRecognition?: SpeechRecognitionCtor };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+
+const SPEECH_ERRORS: Record<string, string> = {
+  "not-allowed": "אין הרשאת מיקרופון. אפשרו גישה למיקרופון בהגדרות הדפדפן ונסו שוב.",
+  "service-not-allowed": "אין הרשאת מיקרופון. אפשרו גישה למיקרופון בהגדרות הדפדפן ונסו שוב.",
+  "no-speech": "לא שמענו כלום. לחצו שוב ודברו קרוב למכשיר.",
+  "audio-capture": "לא נמצא מיקרופון במכשיר.",
+  network: "זיהוי הדיבור דורש חיבור לאינטרנט.",
+};
 
 /**
  * Phone photos are huge and noisy; a downscaled grayscale, higher-contrast
@@ -53,6 +82,7 @@ export default function ExpenseFormModal({
   onDismissError,
   onClose,
   onSubmit,
+  onDelete,
 }: {
   editingExpense: BudgetExpense | null | undefined;
   defaultCategoryId?: string | null;
@@ -63,6 +93,8 @@ export default function ExpenseFormModal({
   onDismissError: () => void;
   onClose: () => void;
   onSubmit: (values: ExpenseFormValues) => Promise<void>;
+  /** When given (editing), a delete button is shown in the form footer. */
+  onDelete?: () => Promise<void> | void;
 }) {
   const [values, setValues] = useState<ExpenseFormValues>(() =>
     editingExpense
@@ -96,6 +128,14 @@ export default function ExpenseFormModal({
   const [scanning, setScanning] = useState(false);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+
+  // Never leave the microphone open if the form is closed mid-dictation.
+  useEffect(() => () => recognitionRef.current?.abort(), []);
 
   const suggestion = useMemo(() => suggestMerchant(values.store, merchants), [values.store, merchants]);
   const suggestedCategory = suggestion
@@ -112,6 +152,100 @@ export default function ExpenseFormModal({
   const isValid =
     values.date &&
     (values.amount_pending || (values.amount !== "" && !Number.isNaN(parsedAmount) && parsedAmount > 0));
+
+  // Fills the form from a dictated sentence: amount, store, and a category --
+  // first from the remembered store, then from keywords ("בנזין" -> דלק).
+  function applySpokenText(text: string) {
+    const spoken = parseSpokenExpense(text);
+    const known = spoken.store ? suggestMerchant(spoken.store, merchants) : null;
+    const keywordName = known ? null : categoryNameForText(`${spoken.store} ${text}`);
+    const keywordCategory = keywordName
+      ? (categories.find((category) => category.name === keywordName && !category.is_hidden) ?? null)
+      : null;
+    const knownCategory = known ? (categories.find((category) => category.id === known.category_id) ?? null) : null;
+
+    if (spoken.amount === null && !spoken.store) {
+      setVoiceMessage(`לא הצלחנו להבין סכום או חנות מ״${text}״. נסו שוב, לדוגמה: ״מאה חמישים שקלים ברמי לוי״.`);
+      return;
+    }
+
+    setValues((v) => ({
+      ...v,
+      amount: spoken.amount !== null ? String(spoken.amount) : v.amount,
+      amount_pending: spoken.amount !== null ? false : v.amount_pending,
+      store: spoken.store || v.store,
+      category_id: keywordCategory ? keywordCategory.id : v.category_id,
+    }));
+    if (keywordCategory) setCategoryTouched(true);
+    else if (known) setCategoryTouched(false); // let the remembered store pick the category
+
+    const found: string[] = [];
+    if (spoken.amount !== null) found.push(`סכום ${spoken.amount}`);
+    if (spoken.store) found.push(`חנות ${spoken.store}`);
+    const category = knownCategory ?? keywordCategory;
+    if (category) found.push(`קטגוריה ${category.name}`);
+    setVoiceMessage(`✓ ${found.join(" · ")}. אפשר לתקן ולשמור.`);
+  }
+
+  function toggleVoice() {
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const Recognition = getSpeechRecognition();
+    if (!Recognition) {
+      setVoiceMessage("הדפדפן הזה לא תומך בזיהוי דיבור. נסו Chrome או Safari עדכני, או הקלידו ידנית.");
+      return;
+    }
+
+    const recognition = new Recognition();
+    recognition.lang = "he-IL";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+
+    let finalText = "";
+    let failed = false;
+    recognition.onresult = (event) => {
+      let interim = "";
+      finalText = "";
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) finalText += result[0].transcript;
+        else interim += result[0].transcript;
+      }
+      setTranscript((finalText + " " + interim).trim());
+    };
+    recognition.onerror = (event) => {
+      failed = true;
+      if (event.error !== "aborted") {
+        setVoiceMessage(SPEECH_ERRORS[event.error] ?? "זיהוי הדיבור נכשל. נסו שוב.");
+      }
+    };
+    recognition.onend = () => {
+      setListening(false);
+      recognitionRef.current = null;
+      if (finalText.trim()) applySpokenText(finalText.trim());
+      else if (!failed) setVoiceMessage("לא שמענו כלום. לחצו שוב ודברו קרוב למכשיר.");
+    };
+
+    recognitionRef.current = recognition;
+    setTranscript("");
+    setVoiceMessage(null);
+    try {
+      recognition.start();
+      setListening(true);
+    } catch {
+      setVoiceMessage("לא הצלחנו להפעיל את המיקרופון. נסו שוב.");
+    }
+  }
+
+  async function handleDelete() {
+    if (!onDelete || submitting) return;
+    setSubmitting(true);
+    await onDelete();
+    setSubmitting(false);
+    setConfirmingDelete(false);
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -221,6 +355,31 @@ export default function ExpenseFormModal({
         <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
           <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
             {error && <ErrorBanner message={error} onDismiss={onDismissError} />}
+
+            {!editingExpense && (
+              <div className="flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  onClick={toggleVoice}
+                  className={`flex w-full items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition-colors ${
+                    listening
+                      ? "animate-pulse bg-rose-500 text-white hover:bg-rose-600"
+                      : "border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300 dark:hover:bg-amber-950/50"
+                  }`}
+                >
+                  <Mic className="h-4 w-4" />
+                  {listening ? "מקשיב... לחצו לעצירה" : "🎙️ הקלט הוצאה"}
+                </button>
+                {listening && (
+                  <p className="text-center text-xs text-stone-500 dark:text-stone-400">
+                    {transcript || "אמרו למשל: ״מאה חמישים שקלים ברמי לוי״"}
+                  </p>
+                )}
+                {!listening && voiceMessage && (
+                  <p className="text-center text-xs text-stone-600 dark:text-stone-300">{voiceMessage}</p>
+                )}
+              </div>
+            )}
 
             <div>
               <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">קבלה / חשבונית (לא חובה)</p>
@@ -391,11 +550,31 @@ export default function ExpenseFormModal({
             </div>
           </div>
 
-          <div className="shrink-0 border-t border-amber-100 bg-white p-4 dark:border-amber-950/30 dark:bg-stone-900">
+          <div className="flex shrink-0 gap-2 border-t border-amber-100 bg-white p-4 dark:border-amber-950/30 dark:bg-stone-900">
+            {onDelete &&
+              (confirmingDelete ? (
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={submitting}
+                  className="shrink-0 rounded-xl bg-rose-500 px-3 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-600 disabled:opacity-50"
+                >
+                  בטוח? מחיקה
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  aria-label="מחיקת הוצאה"
+                  className="shrink-0 rounded-xl border border-rose-200 px-3 py-3 text-rose-500 transition-colors hover:bg-rose-50 dark:border-rose-900/50 dark:hover:bg-rose-950/30"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              ))}
             <button
               type="submit"
               disabled={!isValid || submitting}
-              className="w-full rounded-xl bg-amber-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-600 disabled:opacity-50"
+              className="flex-1 rounded-xl bg-amber-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-600 disabled:opacity-50"
             >
               {editingExpense ? "שמירת שינויים" : "שמירת הוצאה"}
             </button>

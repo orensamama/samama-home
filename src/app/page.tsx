@@ -1,4 +1,4 @@
-import Image from "next/image";
+import FamilyPhoto from "@/components/FamilyPhoto";
 import FamilyQuote from "@/components/FamilyQuote";
 import BudgetWidget from "@/components/BudgetWidget";
 import SummaryCards from "@/components/SummaryCards";
@@ -19,18 +19,7 @@ export default function DashboardPage() {
   return (
     <div className="flex min-h-full flex-col bg-gradient-to-b from-amber-50/70 to-transparent dark:from-amber-950/10">
       <header className="flex flex-col items-center gap-4 px-4 pb-6 pt-8 text-center">
-        <div className="-rotate-2 rounded-2xl border-[6px] border-white bg-white p-1 shadow-lg ring-1 ring-amber-100 dark:border-stone-800 dark:bg-stone-800 dark:ring-amber-950/40">
-          <div className="relative h-40 w-40 overflow-hidden rounded-xl sm:h-48 sm:w-48">
-            <Image
-              src="/family.jpg"
-              alt="משפחת סממה"
-              fill
-              priority
-              sizes="(min-width: 640px) 192px, 160px"
-              className="object-cover"
-            />
-          </div>
-        </div>
+        <FamilyPhoto />
 
         <div>
           <h1 className="text-2xl font-bold text-stone-800 dark:text-stone-50">
