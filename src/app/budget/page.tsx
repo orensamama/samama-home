@@ -311,7 +311,7 @@ export default function BudgetPage() {
           </div>
 
           <div className="mt-3 text-center">
-            <p className="text-xs text-stone-400 dark:text-stone-500">נשאר לחיות החודש</p>
+            <p className="text-xs text-stone-400 dark:text-stone-500">יתרת תקציב פנויה</p>
             <p
               className={`text-4xl font-bold tabular-nums ${
                 remainingNegative ? "text-rose-600 dark:text-rose-400" : "text-emerald-700 dark:text-emerald-400"

@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useState, type FormEvent } from "react";
-import { ChevronDown, Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
 import { formatCurrency } from "@/lib/familyData";
 import {
   KIND_META,
@@ -12,7 +12,15 @@ import {
   type CategoryStatus,
 } from "@/lib/budgetData";
 
-export type CategoryPatch = { name?: string; monthly_budget?: number; is_hidden?: boolean };
+// What the amount box means for each kind, shown in edit mode.
+const BUDGET_FIELD_LABEL: Record<BudgetKind, string> = {
+  income: "הכנסה חודשית צפויה",
+  fixed: "סכום חודשי קבוע",
+  variable: "תקציב חודשי",
+  sinking: "הפרשה חודשית",
+};
+
+export type CategoryPatch ={ name?: string; monthly_budget?: number; is_hidden?: boolean };
 
 type SectionActions = {
   onAddExpense: (categoryId: string) => void;
@@ -75,6 +83,15 @@ function CategoryRow({
 }) {
   const { category, spent, budget, ratio } = status;
   const isIncome = category.kind === "income";
+  const [saved, setSaved] = useState(false);
+
+  // A brief checkmark after an edit is committed, since saving happens on blur.
+  useEffect(() => {
+    if (!saved) return;
+    const timeout = setTimeout(() => setSaved(false), 1500);
+    return () => clearTimeout(timeout);
+  }, [saved]);
+  const flashSaved = () => setSaved(true);
   // Income is "good" when it arrives: green once the expected amount is in.
   const tone = isIncome
     ? budget > 0 && spent >= budget
@@ -86,6 +103,13 @@ function CategoryRow({
   const overBy = !isIncome && budget > 0 && spent > budget ? spent - budget : 0;
 
   if (manage) {
+    const commitBudget = (input: HTMLInputElement) => {
+      const value = Number(input.value || 0);
+      if (!Number.isNaN(value) && value >= 0 && value !== Number(category.monthly_budget)) {
+        actions.onUpdateCategory(category.id, { monthly_budget: value });
+        flashSaved();
+      }
+    };
     return (
       <li className={`flex items-center gap-2 py-1.5 ${category.is_hidden ? "opacity-55" : ""}`}>
         <input
@@ -94,34 +118,35 @@ function CategoryRow({
           defaultValue={category.name}
           onBlur={(event) => {
             const name = event.target.value.trim();
-            if (name && name !== category.name) actions.onUpdateCategory(category.id, { name });
-            else event.target.value = category.name;
+            if (name && name !== category.name) {
+              actions.onUpdateCategory(category.id, { name });
+              flashSaved();
+            } else event.target.value = category.name;
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter") event.currentTarget.blur();
           }}
           className="min-w-0 flex-1 rounded-lg border border-transparent bg-stone-50 px-2 py-1 text-sm text-stone-700 outline-none focus:border-amber-400 dark:bg-stone-800/60 dark:text-stone-200"
         />
-        <span className="shrink-0 text-xs text-stone-400">₪</span>
-        <input
-          type="number"
-          inputMode="decimal"
-          min="0"
-          key={`budget-${category.id}-${category.monthly_budget}`}
-          defaultValue={Number(category.monthly_budget) || ""}
-          placeholder="0"
-          aria-label={`תקציב חודשי - ${category.name}`}
-          onBlur={(event) => {
-            const value = Number(event.target.value || 0);
-            if (!Number.isNaN(value) && value >= 0 && value !== Number(category.monthly_budget)) {
-              actions.onUpdateCategory(category.id, { monthly_budget: value });
-            }
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") event.currentTarget.blur();
-          }}
-          className="w-20 shrink-0 rounded-lg border border-transparent bg-stone-50 px-2 py-1 text-sm text-stone-700 outline-none focus:border-amber-400 dark:bg-stone-800/60 dark:text-stone-200"
-        />
+        <span className="relative shrink-0">
+          <input
+            type="number"
+            inputMode="decimal"
+            min="0"
+            key={`budget-${category.id}-${category.monthly_budget}`}
+            defaultValue={Number(category.monthly_budget) || ""}
+            placeholder="0"
+            aria-label={`${BUDGET_FIELD_LABEL[category.kind]} - ${category.name}`}
+            onFocus={(event) => event.target.select()}
+            onBlur={(event) => commitBudget(event.target)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+            className="w-24 rounded-lg border border-amber-200 bg-white py-1.5 pe-2 ps-6 text-sm font-semibold tabular-nums text-stone-800 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-100"
+          />
+          <span className="pointer-events-none absolute start-2 top-1/2 -translate-y-1/2 text-xs text-stone-400">₪</span>
+        </span>
+        {saved && <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-label="נשמר" />}
         <button
           type="button"
           onClick={() => actions.onUpdateCategory(category.id, { is_hidden: !category.is_hidden })}
@@ -341,6 +366,11 @@ function BudgetKindSection({
 
       {expanded && (
         <div className="border-t border-stone-100 px-4 pb-3 dark:border-stone-800">
+          {manage && (
+            <p className="mt-3 rounded-lg bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+              {BUDGET_FIELD_LABEL[kind]}: הקלידו סכום בכל סעיף - נשמר אוטומטית ✓
+            </p>
+          )}
           {groups.length === 0 && !manage ? (
             <p className="pt-3 text-xs text-stone-400 dark:text-stone-500">אין סעיפים. אפשר להוסיף במצב עריכה.</p>
           ) : (
