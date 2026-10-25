@@ -7,6 +7,8 @@ export type BudgetCategory = {
   group_name: string;
   monthly_budget: number;
   sort_order: number;
+  // Hidden (migration 0017) = out of the dashboard, the maths and the picker, history kept.
+  is_hidden?: boolean;
 };
 
 export type BudgetExpense = {
@@ -120,7 +122,7 @@ export function computeBudgetSummary(
 
   for (const category of categories) {
     const spent = spentByCategory.get(category.id) ?? 0;
-    const budget = Number(category.monthly_budget) || 0;
+    const budget = category.is_hidden ? 0 : Number(category.monthly_budget) || 0;
     statuses.set(category.id, { category, spent, budget, ratio: budget > 0 ? spent / budget : 0 });
 
     if (category.kind === "income") {
@@ -212,6 +214,13 @@ export type ParsedReceipt = {
   amount: number | null;
   store: string | null;
   date: string | null; // ISO
+  items: ReceiptItem[];
+};
+
+export type ReceiptItem = {
+  name: string;
+  qty: number | null;
+  price: number;
 };
 
 function toNumber(raw: string): number | null {
@@ -226,6 +235,83 @@ function toNumber(raw: string): number | null {
 const AMOUNT_PATTERN = /\d{1,3}(?:[,\s]\d{3})*[.,]\d{2}|\d+[.,]\d{2}/g;
 const TOTAL_KEYWORDS = /(סה["״']?כ|סהכ|לתשלום|סכום|total|amount|sum)/i;
 const SKIP_STORE_LINE = /(חשבונית|קבלה|invoice|receipt|עוסק|ח\.?פ|טל[׳'.:]|tel|www|http|מס['׳]?\s|תאריך|date|\d{5,})/i;
+
+// Lines that carry a number but are not purchased items.
+const NON_ITEM_LINE =
+  /(סה["״']?כ|סהכ|לתשלום|סכום|total|subtotal|amount|sum|מע["״']?מ|מעמ|vat|tax|עודף|עיגול|מזומן|אשראי|כרטיס|ויזה|מאסטר|visa|master|cash|change|credit|שולם|תשלום|הנחה|מבצע|חשבונית|קבלה|invoice|receipt|טל[׳'.:]|tel\b|עוסק|ח\.?פ|תאריך|date|שעה|קופה|קופאי|סניף|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})/i;
+const LETTERS = /[֐-׿a-zA-Z]{2,}/;
+// "7.90" at the end of the line (typical LTR order) or at the start (RTL OCR order).
+const PRICE_AT_END = /^(.*?)[\s:]*(\d{1,4}[.,]\d{2})\s*(?:₪|nis|ש"?ח)?\s*$/i;
+const PRICE_AT_START = /^\s*(\d{1,4}[.,]\d{2})\s*(?:₪|nis|ש"?ח)?\s+(.*\S)\s*$/i;
+
+/**
+ * Best-effort purchased-items extraction from OCR text: any line that is a
+ * product name plus a price (price on either end, since Hebrew OCR often
+ * flips the order), with a quantity pulled out when written as "2x" / "x2" /
+ * "כמות 2". Totals, VAT, payment and header lines are skipped. OCR on
+ * receipts is noisy, so this is a convenience for the notes field and is
+ * always shown for the user to review.
+ */
+export function extractReceiptItems(text: string, total: number | null): ReceiptItem[] {
+  const items: ReceiptItem[] = [];
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || NON_ITEM_LINE.test(line)) continue;
+
+    let namePart: string | null = null;
+    let priceRaw: string | null = null;
+    const atEnd = line.match(PRICE_AT_END);
+    if (atEnd && atEnd[1].trim()) {
+      namePart = atEnd[1];
+      priceRaw = atEnd[2];
+    } else {
+      const atStart = line.match(PRICE_AT_START);
+      if (atStart) {
+        priceRaw = atStart[1];
+        namePart = atStart[2];
+      }
+    }
+    if (namePart === null || priceRaw === null) continue;
+
+    const price = toNumber(priceRaw);
+    if (price === null || price <= 0 || price > 9999) continue;
+    if (total !== null && price > total) continue;
+
+    let qty: number | null = null;
+    let name = namePart;
+    const qtyMatch =
+      name.match(/(?:^|\s)(\d{1,3})\s*[xX×*]\s*(?=\S)/) ??
+      name.match(/\s[xX×*]\s*(\d{1,3})(?:\s|$)/) ??
+      name.match(/כמות\s*:?\s*(\d{1,3})/);
+    if (qtyMatch) {
+      const value = Number(qtyMatch[1]);
+      if (value >= 1 && value <= 99) qty = value;
+      name = name.replace(qtyMatch[0], " ");
+    }
+
+    name = name
+      .replace(/\d{6,}/g, " ") // barcodes / SKUs
+      .replace(/[^֐-׿a-zA-Z0-9 '"%.-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!LETTERS.test(name) || name.length < 2) continue;
+
+    items.push({ name: name.slice(0, 40), qty, price });
+    if (items.length >= 40) break;
+  }
+
+  return items;
+}
+
+/** The text saved into an expense's notes from scanned line items. */
+export function formatReceiptItems(items: ReceiptItem[]): string {
+  if (items.length === 0) return "";
+  return [
+    "פירוט קנייה:",
+    ...items.map((item) => `• ${item.name}${item.qty && item.qty > 1 ? ` x${item.qty}` : ""} - ${item.price.toFixed(2)} ₪`),
+  ].join("\n");
+}
 
 export function parseReceiptText(text: string): ParsedReceipt {
   const lines = text
@@ -269,7 +355,7 @@ export function parseReceiptText(text: string): ParsedReceipt {
     if (store) break;
   }
 
-  return { amount, store, date };
+  return { amount, store, date, items: extractReceiptItems(text, amount) };
 }
 
 /** How many months an ISO date is from the current month (0 = this month, -1 = last month...). */
@@ -278,3 +364,16 @@ export function monthOffsetFromDate(iso: string): number {
   const [year, month] = iso.split("-").map(Number);
   return (year - now.getFullYear()) * 12 + (month - 1 - now.getMonth());
 }
+
+/** The expense form's values (shared by the dashboard widget and the budget screen). */
+export type ExpenseFormValues = {
+  amount: string;
+  amount_pending: boolean;
+  store: string;
+  category_id: string; // "" = no category
+  date: string;
+  notes: string;
+  receipt_url: string;
+  /** Re-learn store -> category after the user overrode a remembered one. */
+  remember_mapping: boolean;
+};

@@ -2,20 +2,20 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, ExternalLink, Pencil, Plus, Receipt, Check, Trash2 } from "lucide-react";
+import type { PostgrestError } from "@supabase/supabase-js";
 import PageHeader from "@/components/PageHeader";
 import ErrorBanner from "@/components/ErrorBanner";
 import { SkeletonList } from "@/components/Skeleton";
 import BudgetKindSection, { type CategoryPatch } from "@/components/BudgetKindSection";
-import ExpenseFormModal, { type ExpenseFormValues } from "@/components/ExpenseFormModal";
-import { useSupabaseTable } from "@/lib/useSupabaseTable";
+import ExpenseFormModal from "@/components/ExpenseFormModal";
+import StoreMappingsPanel from "@/components/StoreMappingsPanel";
+import { useBudgetData } from "@/lib/useBudget";
+import { deleteMerchant, saveExpense, updateMerchant, upsertMerchant } from "@/lib/budgetActions";
 import { useOptimisticRows } from "@/lib/useOptimisticRows";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import { formatCurrency, formatDate } from "@/lib/familyData";
 import {
-  CATEGORY_ORDER,
-  EXPENSE_ORDER,
-  EXPENSE_SELECT,
   KIND_ORDER,
   TONE_CLASSES,
   computeBudgetSummary,
@@ -23,26 +23,17 @@ import {
   formatMonthKey,
   monthKeyFromOffset,
   monthOffsetFromDate,
-  normalizeStoreKey,
   progressTone,
-  type BudgetCategory,
   type BudgetExpense,
   type BudgetKind,
-  type MerchantCategory,
+  type ExpenseFormValues,
 } from "@/lib/budgetData";
 
 export default function BudgetPage() {
-  const {
-    rows: serverCategories,
-    loading: categoriesLoading,
-    refetch: refetchCategories,
-  } = useSupabaseTable<BudgetCategory>("budget_categories", "*", CATEGORY_ORDER);
-  const { rows: expenses, refetch: refetchExpenses } = useSupabaseTable<BudgetExpense>(
-    "expenses",
-    EXPENSE_SELECT,
-    EXPENSE_ORDER
-  );
-  const { rows: merchants, refetch: refetchMerchants } = useSupabaseTable<MerchantCategory>("merchant_categories");
+  const { categories: categoriesTable, expenses: expensesTable, merchants: merchantsTable } = useBudgetData();
+  const { rows: serverCategories, loading: categoriesLoading, refetch: refetchCategories } = categoriesTable;
+  const { rows: expenses, refetch: refetchExpenses } = expensesTable;
+  const { rows: merchants, refetch: refetchMerchants } = merchantsTable;
   const categories = useOptimisticRows(serverCategories);
 
   const [monthOffset, setMonthOffset] = useState(0);
@@ -86,44 +77,17 @@ export default function BudgetPage() {
 
   async function handleExpenseSubmit(values: ExpenseFormValues) {
     setFormError(null);
-    const store = values.store.trim();
-    const category = categoryById.get(values.category_id) ?? null;
-    const payload = {
-      title: store || category?.name || "הוצאה",
-      amount: values.amount_pending ? 0 : Number(values.amount),
-      amount_pending: values.amount_pending,
-      expense_date: values.date,
-      notes: values.notes.trim() || null,
-      store: store || null,
-      category_id: category?.id ?? null,
-      receipt_url: values.receipt_url || null,
-    };
-
-    const { error } = editingExpense
-      ? await supabase.from("expenses").update(payload).eq("id", editingExpense.id)
-      : await supabase.from("expenses").insert(payload);
+    const { error, mappingSaved } = await saveExpense({
+      values,
+      editingId: editingExpense?.id ?? null,
+      categories: categories.rows,
+      merchants,
+    });
     if (error) {
-      logSupabaseError("שמירת הוצאה", error);
       setFormError(friendlyErrorMessage(error));
       return;
     }
-
-    // Teach the store -> category memory so next time it's one tap.
-    if (store && category) {
-      const { error: merchantError } = await supabase
-        .from("merchant_categories")
-        .upsert(
-          {
-            store_key: normalizeStoreKey(store),
-            store_name: store,
-            category_id: category.id,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "store_key" }
-        );
-      if (merchantError) logSupabaseError("שמירת זיכרון חנות", merchantError);
-      else refetchMerchants();
-    }
+    if (mappingSaved) refetchMerchants();
 
     // Jump to the month the expense belongs to so it's visible right away.
     setMonthOffset(monthOffsetFromDate(values.date));
@@ -239,6 +203,55 @@ export default function BudgetPage() {
       refetchCategories();
     },
     [serverCategories, refetchCategories]
+  );
+
+  // --- store -> category mappings ------------------------------------------
+
+  const reportMerchantError = useCallback((context: string, error: PostgrestError) => {
+    logSupabaseError(context, error);
+    setPageError(
+      error.code === "23505" ? "כבר קיים שיוך לחנות בשם הזה." : friendlyErrorMessage(error)
+    );
+  }, []);
+
+  const handleAddMerchant = useCallback(
+    async (storeName: string, categoryId: string) => {
+      setPageError(null);
+      const { error } = await upsertMerchant(storeName, categoryId);
+      if (error) return reportMerchantError("הוספת שיוך חנות", error);
+      refetchMerchants();
+    },
+    [refetchMerchants, reportMerchantError]
+  );
+
+  const handleChangeMerchantCategory = useCallback(
+    async (id: string, categoryId: string) => {
+      setPageError(null);
+      const { error } = await updateMerchant(id, { category_id: categoryId });
+      if (error) return reportMerchantError("עדכון שיוך חנות", error);
+      refetchMerchants();
+    },
+    [refetchMerchants, reportMerchantError]
+  );
+
+  const handleRenameMerchant = useCallback(
+    async (id: string, storeName: string) => {
+      setPageError(null);
+      const { error } = await updateMerchant(id, { store_name: storeName });
+      if (error) return reportMerchantError("שינוי שם חנות", error);
+      refetchMerchants();
+    },
+    [refetchMerchants, reportMerchantError]
+  );
+
+  const handleDeleteMerchant = useCallback(
+    async (id: string) => {
+      setPageError(null);
+      const { error } = await deleteMerchant(id);
+      if (error) return reportMerchantError("מחיקת שיוך חנות", error);
+      refetchMerchants();
+    },
+    [refetchMerchants, reportMerchantError]
   );
 
   return (
@@ -386,6 +399,15 @@ export default function BudgetPage() {
             />
           ))
         )}
+
+        <StoreMappingsPanel
+          merchants={merchants}
+          categories={categories.rows}
+          onAdd={handleAddMerchant}
+          onChangeCategory={handleChangeMerchantCategory}
+          onRename={handleRenameMerchant}
+          onDelete={handleDeleteMerchant}
+        />
 
         {summary.uncategorizedSpent > 0 && (
           <div className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm dark:border-amber-900/40 dark:bg-amber-950/20">

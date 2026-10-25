@@ -1,5 +1,6 @@
 import Image from "next/image";
 import FamilyQuote from "@/components/FamilyQuote";
+import BudgetWidget from "@/components/BudgetWidget";
 import SummaryCards from "@/components/SummaryCards";
 import UpcomingEvents from "@/components/UpcomingEvents";
 
@@ -42,6 +43,7 @@ export default function DashboardPage() {
       </header>
 
       <div className="flex flex-col gap-6 p-4">
+        <BudgetWidget />
         <SummaryCards />
         <UpcomingEvents />
       </div>

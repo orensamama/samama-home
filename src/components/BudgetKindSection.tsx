@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useState, type FormEvent } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
 import { formatCurrency } from "@/lib/familyData";
 import {
   KIND_META,
@@ -12,7 +12,7 @@ import {
   type CategoryStatus,
 } from "@/lib/budgetData";
 
-export type CategoryPatch = { name?: string; monthly_budget?: number };
+export type CategoryPatch = { name?: string; monthly_budget?: number; is_hidden?: boolean };
 
 type SectionActions = {
   onAddExpense: (categoryId: string) => void;
@@ -81,7 +81,11 @@ function CategoryRow({
 
   if (manage) {
     return (
-      <li className="flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 dark:border-stone-700 dark:bg-stone-900">
+      <li
+        className={`flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 dark:border-stone-700 dark:bg-stone-900 ${
+          category.is_hidden ? "opacity-55" : ""
+        }`}
+      >
         <input
           type="text"
           key={`name-${category.id}-${category.name}`}
@@ -101,13 +105,13 @@ function CategoryRow({
           type="number"
           inputMode="decimal"
           min="0"
-          key={`budget-${category.id}-${budget}`}
-          defaultValue={budget || ""}
+          key={`budget-${category.id}-${category.monthly_budget}`}
+          defaultValue={Number(category.monthly_budget) || ""}
           placeholder="0"
           aria-label={`תקציב חודשי - ${category.name}`}
           onBlur={(event) => {
             const value = Number(event.target.value || 0);
-            if (!Number.isNaN(value) && value >= 0 && value !== budget) {
+            if (!Number.isNaN(value) && value >= 0 && value !== Number(category.monthly_budget)) {
               actions.onUpdateCategory(category.id, { monthly_budget: value });
             }
           }}
@@ -116,6 +120,15 @@ function CategoryRow({
           }}
           className="w-20 shrink-0 rounded-lg border border-stone-200 bg-transparent px-2 py-1 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-stone-700 dark:text-stone-200"
         />
+        <button
+          type="button"
+          onClick={() => actions.onUpdateCategory(category.id, { is_hidden: !category.is_hidden })}
+          aria-label={category.is_hidden ? `הצגת הסעיף ${category.name}` : `הסתרת הסעיף ${category.name}`}
+          title={category.is_hidden ? "מוסתר - לחצו להצגה" : "הסתרה (שומר את כל ההיסטוריה)"}
+          className="shrink-0 rounded-full p-1.5 text-stone-400 hover:bg-amber-100 hover:text-amber-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
+        >
+          {category.is_hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+        </button>
         <ConfirmDeleteButton
           label={`מחיקת הסעיף ${category.name}`}
           onConfirm={() => actions.onDeleteCategory(category.id)}
@@ -129,6 +142,7 @@ function CategoryRow({
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-stone-800 dark:text-stone-100">
           {category.name}
+          {category.is_hidden && <span className="mr-1.5 text-[10px] font-normal text-stone-400">(מוסתר)</span>}
         </span>
         <span className={`shrink-0 text-xs font-semibold tabular-nums ${TONE_CLASSES[tone].text}`}>
           {formatCurrency(spent)}
@@ -278,8 +292,13 @@ function BudgetKindSection({
     onAddCategory,
   };
 
-  const groups = Array.from(new Set(categories.map((category) => category.group_name)));
-  const kindStatuses = categories.map((category) => statuses.get(category.id)).filter((s): s is CategoryStatus => Boolean(s));
+  // Hidden categories stay out of sight unless editing -- or they still carry
+  // spending this month, which must not silently vanish from the picture.
+  const shown = manage
+    ? categories
+    : categories.filter((category) => !category.is_hidden || (statuses.get(category.id)?.spent ?? 0) > 0);
+  const groups = Array.from(new Set(shown.map((category) => category.group_name)));
+  const kindStatuses = shown.map((category) => statuses.get(category.id)).filter((s): s is CategoryStatus => Boolean(s));
   const totalBudget = kindStatuses.reduce((sum, status) => sum + status.budget, 0);
   const totalSpent = kindStatuses.reduce((sum, status) => sum + status.spent, 0);
 
@@ -316,7 +335,7 @@ function BudgetKindSection({
             key={group}
             kind={kind}
             groupName={group}
-            statuses={categories
+            statuses={shown
               .filter((category) => category.group_name === group)
               .map((category) => statuses.get(category.id))
               .filter((s): s is CategoryStatus => Boolean(s))}

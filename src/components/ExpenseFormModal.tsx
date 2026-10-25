@@ -1,30 +1,47 @@
 "use client";
 
 import { useMemo, useState, type ChangeEvent, type FormEvent } from "react";
-import { Camera, ScanLine, Sparkles, X } from "lucide-react";
+import { Camera, Image as ImageIcon, ScanLine, Sparkles, X } from "lucide-react";
 import ErrorBanner from "@/components/ErrorBanner";
+import CategorySelect from "@/components/CategorySelect";
 import { supabase } from "@/lib/supabaseClient";
 import {
-  KIND_META,
-  KIND_ORDER,
+  formatReceiptItems,
   parseReceiptText,
   suggestMerchant,
   type BudgetCategory,
   type BudgetExpense,
+  type ExpenseFormValues,
   type MerchantCategory,
 } from "@/lib/budgetData";
 
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+export type { ExpenseFormValues };
 
-export type ExpenseFormValues = {
-  amount: string;
-  amount_pending: boolean;
-  store: string;
-  category_id: string; // "" = no category
-  date: string;
-  notes: string;
-  receipt_url: string;
-};
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const OCR_MAX_SIDE = 2000;
+
+/**
+ * Phone photos are huge and noisy; a downscaled grayscale, higher-contrast
+ * copy is both much faster to scan and usually reads better. Falls back to
+ * the original file if the browser can't do it.
+ */
+async function prepareForOcr(file: File): Promise<Blob> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, OCR_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const context = canvas.getContext("2d");
+    if (!context) return file;
+    context.filter = "grayscale(1) contrast(1.35)";
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    return await new Promise<Blob>((resolve) => canvas.toBlob((blob) => resolve(blob ?? file), "image/png"));
+  } catch {
+    return file;
+  }
+}
 
 export default function ExpenseFormModal({
   editingExpense,
@@ -57,6 +74,7 @@ export default function ExpenseFormModal({
           date: editingExpense.date,
           notes: editingExpense.notes ?? "",
           receipt_url: editingExpense.receipt_url ?? "",
+          remember_mapping: true,
         }
       : {
           amount: "",
@@ -66,6 +84,7 @@ export default function ExpenseFormModal({
           date: defaultDate,
           notes: "",
           receipt_url: "",
+          remember_mapping: true,
         }
   );
   // Until the user picks a category themselves, the remembered one for the
@@ -83,23 +102,11 @@ export default function ExpenseFormModal({
     ? (categories.find((category) => category.id === suggestion.category_id) ?? null)
     : null;
   const effectiveCategoryId = categoryTouched ? values.category_id : (suggestedCategory?.id ?? values.category_id);
+  const chosenCategory = categories.find((category) => category.id === effectiveCategoryId) ?? null;
   const showingSuggestion = !categoryTouched && suggestedCategory !== null;
-
-  const groupedOptions = useMemo(
-    () =>
-      KIND_ORDER.map((kind) => {
-        const ofKind = categories.filter((category) => category.kind === kind);
-        const groups = Array.from(new Set(ofKind.map((category) => category.group_name)));
-        return {
-          kind,
-          groups: groups.map((group) => ({
-            group,
-            items: ofKind.filter((category) => category.group_name === group),
-          })),
-        };
-      }).filter((entry) => entry.groups.length > 0),
-    [categories]
-  );
+  // The store is recognised, but the user chose something else: offer to learn it.
+  const offerRemember =
+    categoryTouched && suggestion !== null && chosenCategory !== null && suggestion.category_id !== chosenCategory.id;
 
   const parsedAmount = Number(values.amount);
   const isValid =
@@ -114,16 +121,51 @@ export default function ExpenseFormModal({
     setSubmitting(false);
   }
 
-  async function handleReceiptChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (file.size > MAX_IMAGE_BYTES) {
-      setUploadError("התמונה גדולה מדי (מקסימום 5MB)");
-      return;
+  // First-pass OCR, entirely in the browser (tesseract.js, loaded only when a
+  // receipt is scanned): pulls out the total, store, date and the purchased
+  // items, and pre-fills the form. The user always reviews it before saving.
+  async function scanReceipt(file: File) {
+    setScanning(true);
+    setScanMessage("סורק את הקבלה... (בפעם הראשונה ההורדה של מנוע הזיהוי לוקחת רגע)");
+    try {
+      const image = await prepareForOcr(file);
+      const { createWorker } = await import("tesseract.js");
+      const worker = await createWorker("heb+eng");
+      const { data } = await worker.recognize(image);
+      await worker.terminate();
+      const parsed = parseReceiptText(data.text);
+      const details = formatReceiptItems(parsed.items);
+
+      setValues((v) => {
+        const next = { ...v };
+        if (parsed.amount !== null && (v.amount === "" || Number(v.amount) === 0)) next.amount = String(parsed.amount);
+        if (parsed.store && !v.store.trim()) next.store = parsed.store;
+        if (parsed.date) next.date = parsed.date;
+        if (details && !v.notes.includes("פירוט קנייה")) {
+          next.notes = v.notes.trim() ? `${v.notes.trim()}\n\n${details}` : details;
+        }
+        return next;
+      });
+
+      const found: string[] = [];
+      if (parsed.amount !== null) found.push(`סכום ${parsed.amount}`);
+      if (parsed.store) found.push(`חנות "${parsed.store}"`);
+      if (parsed.date) found.push(`תאריך ${parsed.date}`);
+      if (parsed.items.length > 0) found.push(`${parsed.items.length} פריטים`);
+      setScanMessage(
+        found.length > 0
+          ? `זוהה: ${found.join(" · ")}. כדאי לעבור על הפרטים לפני השמירה.`
+          : "לא הצלחנו לזהות פרטים בקבלה - אפשר למלא ידנית (ננסה שוב עם תמונה חדה ובתאורה טובה)."
+      );
+    } catch (err) {
+      console.error("[OCR] סריקת קבלה:", err);
+      setScanMessage("הסריקה נכשלה (ייתכן שאין חיבור לאינטרנט). אפשר למלא ידנית.");
+    } finally {
+      setScanning(false);
     }
-    setReceiptFile(file);
-    setScanMessage(null);
+  }
+
+  async function uploadReceipt(file: File) {
     setUploading(true);
     setUploadError(null);
     const path = `${crypto.randomUUID()}-${file.name.replace(/[^\w.-]/g, "_")}`;
@@ -139,46 +181,25 @@ export default function ExpenseFormModal({
     setUploading(false);
   }
 
-  // First-pass OCR, entirely in the browser (tesseract.js, loaded only when
-  // asked): pulls out the total, store name and date to pre-fill the form.
-  async function handleScan() {
-    const file = receiptFile;
-    if (!file || scanning) return;
-    setScanning(true);
-    setScanMessage("סורק את הקבלה... (בפעם הראשונה ההורדה של מנוע הזיהוי לוקחת רגע)");
-    try {
-      const { createWorker } = await import("tesseract.js");
-      const worker = await createWorker("heb+eng");
-      const { data } = await worker.recognize(file);
-      await worker.terminate();
-      const parsed = parseReceiptText(data.text);
-
-      const found: string[] = [];
-      setValues((v) => {
-        const next = { ...v };
-        if (parsed.amount !== null && (v.amount === "" || Number(v.amount) === 0)) next.amount = String(parsed.amount);
-        if (parsed.store && !v.store.trim()) next.store = parsed.store;
-        if (parsed.date) next.date = parsed.date;
-        return next;
-      });
-      if (parsed.amount !== null) found.push(`סכום ${parsed.amount}`);
-      if (parsed.store) found.push(`חנות "${parsed.store}"`);
-      if (parsed.date) found.push(`תאריך ${parsed.date}`);
-      setScanMessage(
-        found.length > 0
-          ? `זוהה: ${found.join(" · ")}. כדאי לוודא שהפרטים נכונים.`
-          : "לא הצלחנו לזהות פרטים בקבלה - אפשר למלא ידנית."
-      );
-    } catch (err) {
-      console.error("[OCR] סריקת קבלה:", err);
-      setScanMessage("הסריקה נכשלה (ייתכן שאין חיבור לאינטרנט). אפשר למלא ידנית.");
-    } finally {
-      setScanning(false);
+  function handleReceiptChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > MAX_IMAGE_BYTES) {
+      setUploadError("התמונה גדולה מדי (מקסימום 5MB)");
+      return;
     }
+    setReceiptFile(file);
+    setScanMessage(null);
+    // Save the photo and read it at the same time -- no extra tap needed.
+    void uploadReceipt(file);
+    void scanReceipt(file);
   }
 
   const fieldClass =
     "w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200";
+  const receiptButtonClass =
+    "flex cursor-pointer items-center gap-2 rounded-xl border border-dashed border-amber-300 px-3 py-2 text-sm text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-stone-800";
 
   return (
     <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 sm:items-center">
@@ -200,6 +221,77 @@ export default function ExpenseFormModal({
         <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
           <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
             {error && <ErrorBanner message={error} onDismiss={onDismissError} />}
+
+            <div>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">קבלה / חשבונית (לא חובה)</p>
+              {values.receipt_url || receiptFile ? (
+                <div className="flex items-start gap-3">
+                  {values.receipt_url ? (
+                    <div className="relative w-fit">
+                      {/* eslint-disable-next-line @next/next/no-img-element -- user-uploaded, arbitrary Supabase storage URL */}
+                      <img
+                        src={values.receipt_url}
+                        alt="קבלה"
+                        className="h-24 w-24 rounded-xl border border-amber-200 object-cover dark:border-amber-900/50"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReceiptFile(null);
+                          setScanMessage(null);
+                          setValues((v) => ({ ...v, receipt_url: "" }));
+                        }}
+                        aria-label="הסרת קבלה"
+                        className="absolute -right-2 -top-2 rounded-full bg-stone-800 p-1 text-white shadow"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-stone-500 dark:text-stone-400">{uploading ? "מעלה קבלה..." : ""}</p>
+                  )}
+                  {receiptFile && (
+                    <button
+                      type="button"
+                      onClick={() => void scanReceipt(receiptFile)}
+                      disabled={scanning}
+                      className="flex items-center gap-1.5 rounded-xl border border-amber-300 px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-stone-800"
+                    >
+                      <ScanLine className="h-4 w-4" />
+                      {scanning ? "סורק..." : "סריקה מחדש"}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <label className={receiptButtonClass}>
+                    <Camera className="h-4 w-4" />
+                    צלם קבלה
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      disabled={uploading}
+                      onChange={handleReceiptChange}
+                    />
+                  </label>
+                  <label className={receiptButtonClass}>
+                    <ImageIcon className="h-4 w-4" />
+                    העלה מהגלריה
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      disabled={uploading}
+                      onChange={handleReceiptChange}
+                    />
+                  </label>
+                </div>
+              )}
+              {uploadError && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{uploadError}</p>}
+              {scanMessage && <p className="mt-1.5 text-xs text-stone-600 dark:text-stone-300">{scanMessage}</p>}
+            </div>
 
             <div>
               <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">סכום (₪)</p>
@@ -244,32 +336,34 @@ export default function ExpenseFormModal({
 
             <div>
               <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">קטגוריה</p>
-              <select
+              <CategorySelect
+                categories={categories}
                 value={effectiveCategoryId}
-                onChange={(event) => {
+                onChange={(categoryId) => {
                   setCategoryTouched(true);
-                  setValues((v) => ({ ...v, category_id: event.target.value }));
+                  setValues((v) => ({ ...v, category_id: categoryId }));
                 }}
                 className={fieldClass}
-              >
-                <option value="">ללא קטגוריה</option>
-                {groupedOptions.map(({ kind, groups }) =>
-                  groups.map(({ group, items }) => (
-                    <optgroup key={`${kind}-${group}`} label={`${KIND_META[kind].label.split(" (")[0]} · ${group}`}>
-                      {items.map((category) => (
-                        <option key={category.id} value={category.id}>
-                          {category.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))
-                )}
-              </select>
+              />
               {showingSuggestion && (
                 <p className="mt-1 flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
                   <Sparkles className="h-3 w-3" />
-                  החנות מוכרת - קטגוריה: {suggestedCategory?.name}. אפשר לשנות, ונזכור את הבחירה לפעם הבאה.
+                  החנות מוכרת - קטגוריה: {suggestedCategory?.name}. אפשר לשנות בחופשיות.
                 </p>
+              )}
+              {offerRemember && (
+                <label className="mt-1.5 flex cursor-pointer items-start gap-1.5 rounded-lg bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={values.remember_mapping}
+                    onChange={(event) => setValues((v) => ({ ...v, remember_mapping: event.target.checked }))}
+                  />
+                  <span>
+                    &quot;{suggestion?.store_name}&quot; משויכת כרגע ל-{suggestedCategory?.name}. לשמור את &quot;
+                    {chosenCategory?.name}&quot; כשיוך החדש לפעמים הבאות?
+                  </span>
+                </label>
               )}
             </div>
 
@@ -284,68 +378,16 @@ export default function ExpenseFormModal({
             </div>
 
             <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">הערות (לא חובה)</p>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
+                הערות / פירוט הקנייה (לא חובה)
+              </p>
               <textarea
                 value={values.notes}
                 onChange={(event) => setValues((v) => ({ ...v, notes: event.target.value }))}
-                rows={2}
+                rows={values.notes.includes("\n") ? 7 : 2}
                 placeholder="פירוט נוסף..."
                 className={`${fieldClass} resize-none`}
               />
-            </div>
-
-            <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">קבלה (לא חובה)</p>
-              {values.receipt_url ? (
-                <div className="flex items-start gap-3">
-                  <div className="relative w-fit">
-                    {/* eslint-disable-next-line @next/next/no-img-element -- user-uploaded, arbitrary Supabase storage URL */}
-                    <img
-                      src={values.receipt_url}
-                      alt="קבלה"
-                      className="h-24 w-24 rounded-xl border border-amber-200 object-cover dark:border-amber-900/50"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setReceiptFile(null);
-                        setScanMessage(null);
-                        setValues((v) => ({ ...v, receipt_url: "" }));
-                      }}
-                      aria-label="הסרת קבלה"
-                      className="absolute -right-2 -top-2 rounded-full bg-stone-800 p-1 text-white shadow"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                  {receiptFile && (
-                    <button
-                      type="button"
-                      onClick={handleScan}
-                      disabled={scanning}
-                      className="flex items-center gap-1.5 rounded-xl border border-amber-300 px-3 py-2 text-sm font-medium text-amber-700 transition-colors hover:bg-amber-50 disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-stone-800"
-                    >
-                      <ScanLine className="h-4 w-4" />
-                      {scanning ? "סורק..." : "מלא אוטומטית מהקבלה"}
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <label className="flex w-fit cursor-pointer items-center gap-2 rounded-xl border border-dashed border-amber-300 px-3 py-2 text-sm text-amber-700 transition-colors hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-stone-800">
-                  <Camera className="h-4 w-4" />
-                  {uploading ? "מעלה קבלה..." : "צילום / העלאת קבלה"}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    className="hidden"
-                    disabled={uploading}
-                    onChange={handleReceiptChange}
-                  />
-                </label>
-              )}
-              {uploadError && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{uploadError}</p>}
-              {scanMessage && <p className="mt-1.5 text-xs text-stone-600 dark:text-stone-300">{scanMessage}</p>}
             </div>
           </div>
 
