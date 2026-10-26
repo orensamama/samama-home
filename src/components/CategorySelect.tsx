@@ -1,10 +1,15 @@
 "use client";
 
 import { useMemo } from "react";
-import { KIND_META, KIND_ORDER, type BudgetCategory } from "@/lib/budgetData";
+import { KIND_META, type BudgetCategory, type BudgetKind } from "@/lib/budgetData";
+
+// Everyday spending is what gets logged most, so variable expenses come first,
+// then fixed ones and income, then the periodic savings.
+const PICKER_ORDER: BudgetKind[] = ["variable", "fixed", "income", "sinking"];
 
 /**
- * A native <select> of budget categories grouped by type and group name.
+ * A native <select> of budget categories grouped by type and group name
+ * (variable expenses first).
  * Hidden categories are left out, except the currently selected one (so an
  * existing expense/mapping that points at a hidden category still renders).
  */
@@ -25,7 +30,7 @@ export default function CategorySelect({
 }) {
   const groupedOptions = useMemo(
     () =>
-      KIND_ORDER.map((kind) => {
+      PICKER_ORDER.map((kind) => {
         const ofKind = categories.filter(
           (category) => category.kind === kind && (!category.is_hidden || category.id === value)
         );
