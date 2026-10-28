@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { Camera, Image as ImageIcon, Mic, ScanLine, Sparkles, Trash2, X } from "lucide-react";
+import { Camera, Image as ImageIcon, Mic, ScanLine, Sparkles, Star, Trash2, X } from "lucide-react";
 import ErrorBanner from "@/components/ErrorBanner";
 import CategorySelect from "@/components/CategorySelect";
 import { supabase } from "@/lib/supabaseClient";
 import { categoryNameForText, parseSpokenExpense } from "@/lib/spokenExpense";
 import {
   formatReceiptItems,
+  normalizeStoreKey,
   parseReceiptText,
   suggestMerchant,
   type BudgetCategory,
@@ -119,6 +120,14 @@ export default function ExpenseFormModal({
           remember_mapping: true,
         }
   );
+  // Expense or income: income goes to an income category and is added to the
+  // month's income. Starts from the category being edited / opened from.
+  const [mode, setMode] = useState<"expense" | "income">(() => {
+    const startId = editingExpense ? editingExpense.category_id : defaultCategoryId;
+    return categories.find((category) => category.id === startId)?.kind === "income" ? "income" : "expense";
+  });
+  const isIncome = mode === "income";
+  const [storeFocused, setStoreFocused] = useState(false);
   // Until the user picks a category themselves, the remembered one for the
   // typed store name is used; picking one (even "none") overrides it.
   const [categoryTouched, setCategoryTouched] = useState(Boolean(editingExpense) || Boolean(defaultCategoryId));
@@ -137,10 +146,55 @@ export default function ExpenseFormModal({
   // Never leave the microphone open if the form is closed mid-dictation.
   useEffect(() => () => recognitionRef.current?.abort(), []);
 
-  const suggestion = useMemo(() => suggestMerchant(values.store, merchants), [values.store, merchants]);
+  // The picker only offers what fits the mode: income categories, or everything else.
+  const modeCategories = useMemo(
+    () => categories.filter((category) => (category.kind === "income") === isIncome),
+    [categories, isIncome]
+  );
+  // Remembered stores only apply to expenses (an income "source" isn't a shop).
+  const suggestion = useMemo(
+    () => (isIncome ? null : suggestMerchant(values.store, merchants)),
+    [isIncome, values.store, merchants]
+  );
   const suggestedCategory = suggestion
-    ? (categories.find((category) => category.id === suggestion.category_id) ?? null)
+    ? (modeCategories.find((category) => category.id === suggestion.category_id) ?? null)
     : null;
+
+  // Common (starred) stores as one-tap chips, and typed-prefix autocomplete.
+  const favoriteStores = useMemo(
+    () =>
+      merchants
+        .filter((merchant) => merchant.is_favorite && categories.some((category) => category.id === merchant.category_id))
+        .sort((a, b) => a.store_name.localeCompare(b.store_name, "he")),
+    [merchants, categories]
+  );
+  const storeMatches = useMemo(() => {
+    const query = normalizeStoreKey(values.store);
+    if (isIncome || !storeFocused || !query) return [];
+    return merchants
+      .filter((merchant) => merchant.store_key.includes(query) && merchant.store_key !== query)
+      .sort(
+        (a, b) =>
+          Number(Boolean(b.is_favorite)) - Number(Boolean(a.is_favorite)) ||
+          Number(b.store_key.startsWith(query)) - Number(a.store_key.startsWith(query)) ||
+          a.store_name.localeCompare(b.store_name, "he")
+      )
+      .slice(0, 5);
+  }, [isIncome, storeFocused, values.store, merchants]);
+
+  function pickMerchant(merchant: MerchantCategory) {
+    setValues((v) => ({ ...v, store: merchant.store_name, category_id: merchant.category_id }));
+    setCategoryTouched(true);
+    setStoreFocused(false);
+  }
+
+  function switchMode(next: "expense" | "income") {
+    if (next === mode) return;
+    setMode(next);
+    // The old category belongs to the other kind: start the pick over.
+    setCategoryTouched(false);
+    setValues((v) => ({ ...v, category_id: "" }));
+  }
   const effectiveCategoryId = categoryTouched ? values.category_id : (suggestedCategory?.id ?? values.category_id);
   const chosenCategory = categories.find((category) => category.id === effectiveCategoryId) ?? null;
   const showingSuggestion = !categoryTouched && suggestedCategory !== null;
@@ -151,21 +205,29 @@ export default function ExpenseFormModal({
   const parsedAmount = Number(values.amount);
   const isValid =
     values.date &&
+    (!isIncome || effectiveCategoryId !== "") &&
     (values.amount_pending || (values.amount !== "" && !Number.isNaN(parsedAmount) && parsedAmount > 0));
 
   // Fills the form from a dictated sentence: amount, store, and a category --
   // first from the remembered store, then from keywords ("בנזין" -> דלק).
   function applySpokenText(text: string) {
     const spoken = parseSpokenExpense(text);
-    const known = spoken.store ? suggestMerchant(spoken.store, merchants) : null;
-    const keywordName = known ? null : categoryNameForText(`${spoken.store} ${text}`);
-    const keywordCategory = keywordName
-      ? (categories.find((category) => category.name === keywordName && !category.is_hidden) ?? null)
-      : null;
-    const knownCategory = known ? (categories.find((category) => category.id === known.category_id) ?? null) : null;
+    const known = !isIncome && spoken.store ? suggestMerchant(spoken.store, merchants) : null;
+    // Income: pick the income category whose name was said ("משכורת אורן"); expense: by keywords.
+    const keywordName = isIncome || known ? null : categoryNameForText(`${spoken.store} ${text}`);
+    const keywordCategory = isIncome
+      ? (modeCategories.find((category) => !category.is_hidden && text.includes(category.name)) ?? null)
+      : keywordName
+        ? (modeCategories.find((category) => category.name === keywordName && !category.is_hidden) ?? null)
+        : null;
+    const knownCategory = known ? (modeCategories.find((category) => category.id === known.category_id) ?? null) : null;
 
     if (spoken.amount === null && !spoken.store) {
-      setVoiceMessage(`לא הצלחנו להבין סכום או חנות מ״${text}״. נסו שוב, לדוגמה: ״מאה חמישים שקלים ברמי לוי״.`);
+      setVoiceMessage(
+        isIncome
+          ? `לא הצלחנו להבין סכום או מקור מ״${text}״. נסו שוב, לדוגמה: ״אלף חמש מאות שקלים בונוס״.`
+          : `לא הצלחנו להבין סכום או חנות מ״${text}״. נסו שוב, לדוגמה: ״מאה חמישים שקלים ברמי לוי״.`
+      );
       return;
     }
 
@@ -181,7 +243,7 @@ export default function ExpenseFormModal({
 
     const found: string[] = [];
     if (spoken.amount !== null) found.push(`סכום ${spoken.amount}`);
-    if (spoken.store) found.push(`חנות ${spoken.store}`);
+    if (spoken.store) found.push(`${isIncome ? "מקור" : "חנות"} ${spoken.store}`);
     const category = knownCategory ?? keywordCategory;
     if (category) found.push(`קטגוריה ${category.name}`);
     setVoiceMessage(`✓ ${found.join(" · ")}. אפשר לתקן ולשמור.`);
@@ -327,7 +389,8 @@ export default function ExpenseFormModal({
     setScanMessage(null);
     // Save the photo and read it at the same time -- no extra tap needed.
     void uploadReceipt(file);
-    void scanReceipt(file);
+    // OCR reads shop receipts; a payslip/confirmation is just attached.
+    if (!isIncome) void scanReceipt(file);
   }
 
   const fieldClass =
@@ -340,7 +403,7 @@ export default function ExpenseFormModal({
       <div className="flex max-h-[90dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-white shadow-lg sm:max-w-md sm:rounded-3xl dark:bg-stone-900">
         <div className="flex shrink-0 items-center justify-between border-b border-amber-100 p-4 dark:border-amber-950/30">
           <h2 className="text-lg font-bold text-stone-800 dark:text-stone-100">
-            {editingExpense ? "עריכת הוצאה" : "הוצאה חדשה"}
+            {editingExpense ? (isIncome ? "עריכת הכנסה" : "עריכת הוצאה") : isIncome ? "הכנסה חדשה" : "הוצאה חדשה"}
           </h2>
           <button
             type="button"
@@ -356,6 +419,34 @@ export default function ExpenseFormModal({
           <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
             {error && <ErrorBanner message={error} onDismiss={onDismissError} />}
 
+            {/* Expense vs income: separate flows, income is added to the month's income. */}
+            <div role="group" aria-label="סוג התנועה" className="grid grid-cols-2 gap-1 rounded-xl bg-stone-100 p-1 dark:bg-stone-800">
+              <button
+                type="button"
+                onClick={() => switchMode("expense")}
+                aria-pressed={!isIncome}
+                className={`rounded-lg py-2 text-sm font-semibold transition-colors ${
+                  !isIncome
+                    ? "bg-white text-rose-600 shadow-sm dark:bg-stone-900 dark:text-rose-400"
+                    : "text-stone-500 dark:text-stone-400"
+                }`}
+              >
+                🔴 הוצאה
+              </button>
+              <button
+                type="button"
+                onClick={() => switchMode("income")}
+                aria-pressed={isIncome}
+                className={`rounded-lg py-2 text-sm font-semibold transition-colors ${
+                  isIncome
+                    ? "bg-white text-emerald-600 shadow-sm dark:bg-stone-900 dark:text-emerald-400"
+                    : "text-stone-500 dark:text-stone-400"
+                }`}
+              >
+                🟢 הכנסה
+              </button>
+            </div>
+
             {!editingExpense && (
               <div className="flex flex-col gap-1.5">
                 <button
@@ -368,11 +459,12 @@ export default function ExpenseFormModal({
                   }`}
                 >
                   <Mic className="h-4 w-4" />
-                  {listening ? "מקשיב... לחצו לעצירה" : "🎙️ הקלט הוצאה"}
+                  {listening ? "מקשיב... לחצו לעצירה" : isIncome ? "🎙️ הקלט הכנסה" : "🎙️ הקלט הוצאה"}
                 </button>
                 {listening && (
                   <p className="text-center text-xs text-stone-500 dark:text-stone-400">
-                    {transcript || "אמרו למשל: ״מאה חמישים שקלים ברמי לוי״"}
+                    {transcript ||
+                      (isIncome ? "אמרו למשל: ״אלף חמש מאות שקלים בונוס״" : "אמרו למשל: ״מאה חמישים שקלים ברמי לוי״")}
                   </p>
                 )}
                 {!listening && voiceMessage && (
@@ -382,7 +474,9 @@ export default function ExpenseFormModal({
             )}
 
             <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">קבלה / חשבונית (לא חובה)</p>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
+                {isIncome ? "תלוש / אסמכתא (לא חובה)" : "קבלה / חשבונית (לא חובה)"}
+              </p>
               {values.receipt_url || receiptFile ? (
                 <div className="flex items-start gap-3">
                   {values.receipt_url ? (
@@ -409,7 +503,7 @@ export default function ExpenseFormModal({
                   ) : (
                     <p className="text-xs text-stone-500 dark:text-stone-400">{uploading ? "מעלה קבלה..." : ""}</p>
                   )}
-                  {receiptFile && (
+                  {receiptFile && !isIncome && (
                     <button
                       type="button"
                       onClick={() => void scanReceipt(receiptFile)}
@@ -425,7 +519,7 @@ export default function ExpenseFormModal({
                 <div className="flex flex-wrap gap-2">
                   <label className={receiptButtonClass}>
                     <Camera className="h-4 w-4" />
-                    צלם קבלה
+                    {isIncome ? "צלם אסמכתא" : "צלם קבלה"}
                     <input
                       type="file"
                       accept="image/*"
@@ -453,7 +547,9 @@ export default function ExpenseFormModal({
             </div>
 
             <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">סכום (₪)</p>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
+                {isIncome ? "סכום ההכנסה (₪)" : "סכום (₪)"}
+              </p>
               <input
                 type="number"
                 inputMode="decimal"
@@ -477,26 +573,75 @@ export default function ExpenseFormModal({
             </div>
 
             <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">שם החנות / בית העסק</p>
-              <input
-                type="text"
-                list="expense-store-suggestions"
-                value={values.store}
-                onChange={(event) => setValues((v) => ({ ...v, store: event.target.value }))}
-                placeholder="לדוגמה: רמי לוי"
-                className={fieldClass}
-              />
-              <datalist id="expense-store-suggestions">
-                {merchants.map((merchant) => (
-                  <option key={merchant.id} value={merchant.store_name} />
-                ))}
-              </datalist>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
+                {isIncome ? "מקור ההכנסה" : "שם החנות / בית העסק"}
+              </p>
+
+              {/* Common (starred) stores: one tap sets the store and its category. */}
+              {!isIncome && favoriteStores.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {favoriteStores.map((merchant) => (
+                    <button
+                      key={merchant.id}
+                      type="button"
+                      onClick={() => pickMerchant(merchant)}
+                      className={`flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                        normalizeStoreKey(values.store) === merchant.store_key
+                          ? "border-amber-500 bg-amber-500 text-white"
+                          : "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300"
+                      }`}
+                    >
+                      <Star className="h-3 w-3 fill-current" />
+                      {merchant.store_name}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="relative">
+                <input
+                  type="text"
+                  value={values.store}
+                  autoComplete="off"
+                  onChange={(event) => setValues((v) => ({ ...v, store: event.target.value }))}
+                  onFocus={() => setStoreFocused(true)}
+                  onBlur={() => setStoreFocused(false)}
+                  placeholder={isIncome ? "לדוגמה: מעסיק, בונוס, שכר דירה" : "לדוגמה: רמי לוי"}
+                  className={fieldClass}
+                />
+                {storeMatches.length > 0 && (
+                  <ul className="absolute inset-x-0 top-full z-10 mt-1 overflow-hidden rounded-xl border border-amber-200 bg-white shadow-lg dark:border-amber-900/50 dark:bg-stone-900">
+                    {storeMatches.map((merchant) => (
+                      <li key={merchant.id}>
+                        {/* mouse-down (not click) so the input's blur doesn't close the list first */}
+                        <button
+                          type="button"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            pickMerchant(merchant);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-right text-sm text-stone-700 hover:bg-amber-50 dark:text-stone-200 dark:hover:bg-stone-800"
+                        >
+                          {merchant.is_favorite && <Star className="h-3 w-3 shrink-0 fill-amber-400 text-amber-500" />}
+                          <span className="min-w-0 flex-1 truncate">{merchant.store_name}</span>
+                          <span className="shrink-0 text-[11px] text-stone-400">
+                            {categories.find((category) => category.id === merchant.category_id)?.name}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
 
             <div>
-              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">קטגוריה</p>
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
+                {isIncome ? "קטגוריית הכנסה" : "קטגוריה"}
+              </p>
               <CategorySelect
-                categories={categories}
+                categories={modeCategories}
+                emptyLabel={isIncome ? "בחרו קטגוריית הכנסה" : "ללא קטגוריה"}
                 value={effectiveCategoryId}
                 onChange={(categoryId) => {
                   setCategoryTouched(true);
@@ -538,7 +683,7 @@ export default function ExpenseFormModal({
 
             <div>
               <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
-                הערות / פירוט הקנייה (לא חובה)
+                {isIncome ? "הערות (לא חובה)" : "הערות / פירוט הקנייה (לא חובה)"}
               </p>
               <textarea
                 value={values.notes}
@@ -574,9 +719,11 @@ export default function ExpenseFormModal({
             <button
               type="submit"
               disabled={!isValid || submitting}
-              className="flex-1 rounded-xl bg-amber-500 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-600 disabled:opacity-50"
+              className={`flex-1 rounded-xl px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors disabled:opacity-50 ${
+                isIncome ? "bg-emerald-500 hover:bg-emerald-600" : "bg-amber-500 hover:bg-amber-600"
+              }`}
             >
-              {editingExpense ? "שמירת שינויים" : "שמירת הוצאה"}
+              {editingExpense ? "שמירת שינויים" : isIncome ? "שמירת הכנסה" : "שמירת הוצאה"}
             </button>
           </div>
         </form>

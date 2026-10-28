@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, ExternalLink, Pencil, Plus, Search, X } from "lucide-react";
 import type { PostgrestError } from "@supabase/supabase-js";
 import PageHeader from "@/components/PageHeader";
@@ -8,7 +8,8 @@ import ErrorBanner from "@/components/ErrorBanner";
 import { SkeletonList } from "@/components/Skeleton";
 import BudgetKindSection, { type CategoryPatch } from "@/components/BudgetKindSection";
 import BudgetSetupBanner from "@/components/BudgetSetupBanner";
-import CategorySelect from "@/components/CategorySelect";
+import CategoryMultiSelect from "@/components/CategoryMultiSelect";
+import SetupSqlButton from "@/components/SetupSqlButton";
 import ExpenseFormModal from "@/components/ExpenseFormModal";
 import StoreMappingsPanel from "@/components/StoreMappingsPanel";
 import { useBudgetData } from "@/lib/useBudget";
@@ -25,6 +26,7 @@ import {
   formatMonthKey,
   monthKeyFromOffset,
   monthOffsetFromDate,
+  normalizeStoreKey,
   progressTone,
   type BudgetExpense,
   type BudgetKind,
@@ -43,7 +45,10 @@ export default function BudgetPage() {
   const [monthOffset, setMonthOffset] = useState(0);
   const [manage, setManage] = useState(false);
   const [txSearch, setTxSearch] = useState("");
-  const [txCategory, setTxCategory] = useState("");
+  const [txCategories, setTxCategories] = useState<string[]>([]);
+  const [txStore, setTxStore] = useState(""); // normalized store key, "" = all stores
+  const [showFavoritesSql, setShowFavoritesSql] = useState(false);
+  const transactionsRef = useRef<HTMLDivElement>(null);
   const [txAllMonths, setTxAllMonths] = useState(false);
   // How many transactions are shown; resets to a page whenever the list's scope changes.
   const [txLimit, setTxLimit] = useState({ key: "", count: TRANSACTIONS_PAGE });
@@ -63,31 +68,53 @@ export default function BudgetPage() {
     [categories.rows]
   );
 
-  // Transactions list: the viewed month (or all of them), narrowed by store text and category.
+  // Transactions list: the viewed month (or all of them), narrowed by a free-text
+  // search, one store, and any number of categories.
   const searchText = txSearch.trim().toLowerCase();
-  const filtersActive = searchText !== "" || txCategory !== "";
+  const filtersActive = searchText !== "" || txCategories.length > 0 || txStore !== "";
+  const inScope = useMemo(
+    () => expenses.filter((expense) => txAllMonths || expense.date.startsWith(monthKey)),
+    [expenses, monthKey, txAllMonths]
+  );
+  // Stores seen in the current scope (most used first) for the store dropdown.
+  const storeOptions = useMemo(() => {
+    const byKey = new Map<string, { name: string; count: number }>();
+    for (const expense of inScope) {
+      const name = (expense.store || expense.title || "").trim();
+      const key = normalizeStoreKey(name);
+      if (!key) continue;
+      const entry = byKey.get(key);
+      if (entry) entry.count += 1;
+      else byKey.set(key, { name, count: 1 });
+    }
+    return Array.from(byKey, ([key, entry]) => ({ key, ...entry })).sort(
+      (a, b) => b.count - a.count || a.name.localeCompare(b.name, "he")
+    );
+  }, [inScope]);
   const filteredExpenses = useMemo(
     () =>
-      expenses.filter((expense) => {
-        if (!txAllMonths && !expense.date.startsWith(monthKey)) return false;
-        if (txCategory && expense.category_id !== txCategory) return false;
-        if (searchText && !(expense.store || expense.title).toLowerCase().includes(searchText)) return false;
+      inScope.filter((expense) => {
+        if (txCategories.length > 0 && !(expense.category_id && txCategories.includes(expense.category_id))) return false;
+        const name = expense.store || expense.title || "";
+        if (txStore && normalizeStoreKey(name) !== txStore) return false;
+        if (searchText && !name.toLowerCase().includes(searchText)) return false;
         return true;
       }),
-    [expenses, monthKey, txAllMonths, txCategory, searchText]
+    [inScope, txCategories, txStore, searchText]
   );
-  // Money out, unless the filter is an income category -- then it's money in.
-  const filterIsIncome = txCategory !== "" && categoryById.get(txCategory)?.kind === "income";
-  const filteredTotal = useMemo(
-    () =>
-      filteredExpenses.reduce((sum, expense) => {
-        if (expense.amount_pending) return sum;
-        const isIncome = expense.category_id ? categoryById.get(expense.category_id)?.kind === "income" : false;
-        return isIncome === filterIsIncome ? sum + (Number(expense.amount) || 0) : sum;
-      }, 0),
-    [filteredExpenses, categoryById, filterIsIncome]
-  );
-  const txKey = `${monthKey}|${txAllMonths}|${txCategory}|${searchText}`;
+  // Money out and money in are totalled separately (income is never subtracted).
+  const filteredTotals = useMemo(() => {
+    let out = 0;
+    let incoming = 0;
+    for (const expense of filteredExpenses) {
+      if (expense.amount_pending) continue;
+      const amount = Number(expense.amount) || 0;
+      if (expense.category_id && categoryById.get(expense.category_id)?.kind === "income") incoming += amount;
+      else out += amount;
+    }
+    return { out, incoming };
+  }, [filteredExpenses, categoryById]);
+  const txKey = `${monthKey}|${txAllMonths}|${txCategories.join(",")}|${txStore}|${searchText}`;
   const txCount = txLimit.key === txKey ? txLimit.count : TRANSACTIONS_PAGE;
   const visibleTransactions = filteredExpenses.slice(0, txCount);
   const hiddenTransactions = filteredExpenses.length - visibleTransactions.length;
@@ -95,6 +122,15 @@ export default function BudgetPage() {
   const remainingNegative = summary.remaining < 0;
   const variableTone = progressTone(summary.variableSpent, summary.variableBudget);
   const variableLeft = summary.variableBudget - summary.variableSpent;
+
+  // Tapping a category row filters the transactions to it (tap again to clear)
+  // and brings the list into view.
+  const handleFilterCategory = useCallback((id: string) => {
+    setTxCategories((current) => (current.length === 1 && current[0] === id ? [] : [id]));
+    setTxStore("");
+    setTxSearch("");
+    requestAnimationFrame(() => transactionsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }, []);
 
   // --- expenses ---------------------------------------------------------
 
@@ -281,6 +317,26 @@ export default function BudgetPage() {
     [refetchMerchants, reportMerchantError]
   );
 
+  const handleToggleFavorite = useCallback(
+    async (id: string, favorite: boolean) => {
+      setPageError(null);
+      setShowFavoritesSql(false);
+      const { error } = await updateMerchant(id, { is_favorite: favorite });
+      if (error) {
+        // Column missing: the one-time SQL (migration 0019) hasn't been run yet.
+        if (error.code === "42703" || error.code === "PGRST204") {
+          logSupabaseError("סימון חנות נפוצה", error);
+          setShowFavoritesSql(true);
+          setPageError("כדי לסמן חנויות נפוצות צריך להריץ פעם אחת את ה-SQL שבכפתור שמתחת, ב-Supabase (SQL Editor).");
+          return;
+        }
+        return reportMerchantError("סימון חנות נפוצה", error);
+      }
+      refetchMerchants();
+    },
+    [refetchMerchants, reportMerchantError]
+  );
+
   const handleDeleteMerchant = useCallback(
     async (id: string) => {
       setPageError(null);
@@ -304,6 +360,7 @@ export default function BudgetPage() {
 
       <div className="flex flex-col gap-4 p-4 pb-28">
         {pageError && <ErrorBanner message={pageError} onDismiss={() => setPageError(null)} />}
+        {showFavoritesSql && <SetupSqlButton />}
         <BudgetSetupBanner setup={setup} />
 
         {/* Summary: month switcher + what's left to live on */}
@@ -404,6 +461,8 @@ export default function BudgetPage() {
               key={kind}
               kind={kind}
               defaultOpen={kind === "variable"}
+              selectedIds={txCategories}
+              onFilterCategory={handleFilterCategory}
               categories={categories.rows.filter((category) => category.kind === kind)}
               statuses={summary.statuses}
               manage={manage}
@@ -433,37 +492,70 @@ export default function BudgetPage() {
           onChangeCategory={handleChangeMerchantCategory}
           onRename={handleRenameMerchant}
           onDelete={handleDeleteMerchant}
+          onToggleFavorite={handleToggleFavorite}
         />
 
         {/* Transactions of the viewed month: tap one to edit or delete it */}
-        <div className="flex flex-col gap-2">
+        <div ref={transactionsRef} className="flex scroll-mt-16 flex-col gap-2">
           <h2 className="text-sm font-bold text-stone-700 dark:text-stone-200">
             תנועות{filteredExpenses.length > 0 ? ` (${filteredExpenses.length})` : ""}
           </h2>
 
-          {/* Search by store, narrow by category, optionally across all months */}
+          {/* Search / pick a store, pick one or several categories, optionally across all months */}
           <div className="flex flex-col gap-2 rounded-2xl border border-amber-100 bg-white p-2.5 dark:border-amber-950/30 dark:bg-stone-900">
-            <div className="flex gap-2">
-              <div className="relative min-w-0 flex-1">
-                <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-stone-400" />
-                <input
-                  type="search"
-                  value={txSearch}
-                  onChange={(event) => setTxSearch(event.target.value)}
-                  placeholder="חיפוש לפי חנות (רמי לוי, בום...)"
-                  aria-label="חיפוש תנועות לפי שם חנות"
-                  className="w-full rounded-xl border border-amber-200 bg-white py-2 pe-3 ps-8 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
-                />
-              </div>
-              <CategorySelect
-                categories={categories.rows}
-                value={txCategory}
-                onChange={setTxCategory}
-                emptyLabel="כל הקטגוריות"
-                ariaLabel="סינון לפי קטגוריה"
-                className="w-36 shrink-0 rounded-xl border border-amber-200 bg-white px-2 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
+            <div className="relative">
+              <Search className="pointer-events-none absolute start-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-stone-400" />
+              <input
+                type="search"
+                value={txSearch}
+                onChange={(event) => setTxSearch(event.target.value)}
+                placeholder="חיפוש לפי חנות (רמי לוי, בום...)"
+                aria-label="חיפוש תנועות לפי שם חנות"
+                className="w-full rounded-xl border border-amber-200 bg-white py-2 pe-3 ps-8 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
               />
             </div>
+            <div className="grid grid-cols-2 items-start gap-2">
+              <select
+                value={txStore}
+                onChange={(event) => setTxStore(event.target.value)}
+                aria-label="סינון לפי חנות"
+                className="w-full rounded-xl border border-amber-200 bg-white px-2 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
+              >
+                <option value="">כל החנויות</option>
+                {storeOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.name} ({option.count})
+                  </option>
+                ))}
+                {txStore && !storeOptions.some((option) => option.key === txStore) && (
+                  <option value={txStore}>{txStore}</option>
+                )}
+              </select>
+              <CategoryMultiSelect
+                categories={categories.rows}
+                selected={txCategories}
+                onChange={setTxCategories}
+                className="w-full rounded-xl border border-amber-200 bg-white px-2 py-2 text-sm text-stone-700 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
+              />
+            </div>
+
+            {txCategories.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {txCategories.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setTxCategories((current) => current.filter((value) => value !== id))}
+                    aria-label={`הסרת ${categoryById.get(id)?.name ?? "קטגוריה"} מהסינון`}
+                    className="flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                  >
+                    {categoryById.get(id)?.name ?? "קטגוריה"}
+                    <X className="h-3 w-3" />
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="flex items-center justify-between gap-2 text-xs">
               <label className="flex cursor-pointer items-center gap-1.5 text-stone-500 dark:text-stone-400">
                 <input type="checkbox" checked={txAllMonths} onChange={(event) => setTxAllMonths(event.target.checked)} />
@@ -474,7 +566,8 @@ export default function BudgetPage() {
                   type="button"
                   onClick={() => {
                     setTxSearch("");
-                    setTxCategory("");
+                    setTxCategories([]);
+                    setTxStore("");
                   }}
                   className="flex items-center gap-0.5 font-medium text-amber-600 hover:underline dark:text-amber-400"
                 >
@@ -484,13 +577,25 @@ export default function BudgetPage() {
               )}
             </div>
             {filtersActive && (
-              <div className="flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2 text-sm dark:bg-amber-950/20">
-                <span className="text-amber-800 dark:text-amber-300">
-                  {filterIsIncome ? "סה״כ הכנסות" : "סה״כ הוצאות"} · {filteredExpenses.length} תנועות
-                </span>
-                <span className="font-bold tabular-nums text-amber-900 dark:text-amber-200">
-                  {formatCurrency(filteredTotal)}
-                </span>
+              <div className="flex flex-col gap-0.5 rounded-xl bg-amber-50 px-3 py-2 text-sm dark:bg-amber-950/20">
+                {(filteredTotals.out > 0 || filteredTotals.incoming === 0) && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-amber-800 dark:text-amber-300">
+                      סה״כ הוצאות · {filteredExpenses.length} תנועות
+                    </span>
+                    <span className="font-bold tabular-nums text-amber-900 dark:text-amber-200">
+                      {formatCurrency(filteredTotals.out)}
+                    </span>
+                  </div>
+                )}
+                {filteredTotals.incoming > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-emerald-800 dark:text-emerald-300">סה״כ הכנסות</span>
+                    <span className="font-bold tabular-nums text-emerald-800 dark:text-emerald-300">
+                      +{formatCurrency(filteredTotals.incoming)}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
           </div>

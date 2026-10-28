@@ -24,6 +24,7 @@ export type CategoryPatch ={ name?: string; monthly_budget?: number; is_hidden?:
 
 type SectionActions = {
   onAddExpense: (categoryId: string) => void;
+  onFilterCategory: (categoryId: string) => void;
   onUpdateCategory: (id: string, patch: CategoryPatch) => void;
   onDeleteCategory: (id: string) => void;
   onRenameGroup: (kind: BudgetKind, oldName: string, newName: string) => void;
@@ -63,22 +64,26 @@ function ConfirmDeleteButton({ onConfirm, label }: { onConfirm: () => void; labe
 
 function ProgressBar({ ratio, tone, thin = false }: { ratio: number; tone: keyof typeof TONE_CLASSES; thin?: boolean }) {
   return (
-    <div className={`w-full overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800 ${thin ? "h-1" : "h-1.5"}`}>
-      <div
-        className={`h-full rounded-full transition-all ${TONE_CLASSES[tone].bar}`}
+    // spans, so it can sit inside the clickable row button
+    <span className={`block w-full overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800 ${thin ? "h-1" : "h-1.5"}`}>
+      <span
+        className={`block h-full rounded-full transition-all ${TONE_CLASSES[tone].bar}`}
         style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }}
       />
-    </div>
+    </span>
   );
 }
 
 function CategoryRow({
   status,
   manage,
+  selected,
   actions,
 }: {
   status: CategoryStatus;
   manage: boolean;
+  /** This category is part of the transactions filter. */
+  selected: boolean;
   actions: SectionActions;
 }) {
   const { category, spent, budget, ratio } = status;
@@ -165,33 +170,50 @@ function CategoryRow({
   }
 
   return (
-    <li className="flex flex-col gap-1.5 py-2">
-      <div className="flex items-baseline gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm text-stone-800 dark:text-stone-100">
-          {category.name}
-          {category.is_hidden && <span className="mr-1.5 text-[10px] text-stone-400">(מוסתר)</span>}
+    <li className="flex items-start gap-1 py-1">
+      {/* Tap the row: the transactions list below filters to this category. */}
+      <button
+        type="button"
+        onClick={() => actions.onFilterCategory(category.id)}
+        aria-pressed={selected}
+        aria-label={`הצגת התנועות של ${category.name}`}
+        className={`flex min-w-0 flex-1 flex-col gap-1.5 rounded-lg px-2 py-1.5 text-right transition-colors ${
+          selected
+            ? "bg-amber-50 ring-1 ring-amber-300 dark:bg-amber-950/20 dark:ring-amber-800"
+            : "hover:bg-stone-50 dark:hover:bg-stone-800/50"
+        }`}
+      >
+        <span className="flex items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate text-sm text-stone-800 dark:text-stone-100">
+            {category.name}
+            {category.is_hidden && <span className="mr-1.5 text-[10px] text-stone-400">(מוסתר)</span>}
+          </span>
+          <span className={`shrink-0 text-sm font-semibold tabular-nums ${TONE_CLASSES[tone].text}`}>
+            {formatCurrency(spent)}
+          </span>
+          {budget > 0 && (
+            <span className="shrink-0 text-xs tabular-nums text-stone-400 dark:text-stone-500">
+              / {formatCurrency(budget)}
+            </span>
+          )}
         </span>
-        <span className={`shrink-0 text-sm font-semibold tabular-nums ${TONE_CLASSES[tone].text}`}>
-          {formatCurrency(spent)}
-        </span>
-        {budget > 0 && (
-          <span className="shrink-0 text-xs tabular-nums text-stone-400 dark:text-stone-500">
-            / {formatCurrency(budget)}
+        {(budget > 0 || spent > 0) && <ProgressBar ratio={budget > 0 ? ratio : 1} tone={tone} />}
+        {budget > 0 && !isIncome && (
+          <span className={`text-[11px] font-medium tabular-nums ${overBy > 0 ? "text-rose-600 dark:text-rose-400" : "text-stone-400 dark:text-stone-500"}`}>
+            {overBy > 0
+              ? `חריגה של ${formatCurrency(overBy)} · ${Math.round(ratio * 100)}% ניצול`
+              : `${Math.round(ratio * 100)}% ניצול · נשאר ${formatCurrency(budget - spent)}`}
           </span>
         )}
-        <button
-          type="button"
-          onClick={() => actions.onAddExpense(category.id)}
-          aria-label={isIncome ? `רישום הכנסה - ${category.name}` : `הוספת הוצאה - ${category.name}`}
-          className="shrink-0 self-center rounded-full p-1 text-stone-300 transition-colors hover:bg-amber-100 hover:text-amber-600 dark:text-stone-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
-      </div>
-      {(budget > 0 || spent > 0) && <ProgressBar ratio={budget > 0 ? ratio : 1} tone={tone} />}
-      {overBy > 0 && (
-        <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400">חריגה של {formatCurrency(overBy)}</p>
-      )}
+      </button>
+      <button
+        type="button"
+        onClick={() => actions.onAddExpense(category.id)}
+        aria-label={isIncome ? `רישום הכנסה - ${category.name}` : `הוספת הוצאה - ${category.name}`}
+        className="mt-1.5 shrink-0 rounded-full p-1 text-stone-300 transition-colors hover:bg-amber-100 hover:text-amber-600 dark:text-stone-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
+      >
+        <Plus className="h-4 w-4" />
+      </button>
     </li>
   );
 }
@@ -201,12 +223,14 @@ function GroupBlock({
   groupName,
   statuses,
   manage,
+  selectedIds,
   actions,
 }: {
   kind: BudgetKind;
   groupName: string;
   statuses: CategoryStatus[];
   manage: boolean;
+  selectedIds: string[];
   actions: SectionActions;
 }) {
   const [renaming, setRenaming] = useState(false);
@@ -261,7 +285,13 @@ function GroupBlock({
 
       <ul className="divide-y divide-stone-100 dark:divide-stone-800">
         {statuses.map((status) => (
-          <CategoryRow key={status.category.id} status={status} manage={manage} actions={actions} />
+          <CategoryRow
+            key={status.category.id}
+            status={status}
+            manage={manage}
+            selected={selectedIds.includes(status.category.id)}
+            actions={actions}
+          />
         ))}
       </ul>
 
@@ -294,7 +324,9 @@ function BudgetKindSection({
   statuses,
   manage,
   defaultOpen = false,
+  selectedIds,
   onAddExpense,
+  onFilterCategory,
   onUpdateCategory,
   onDeleteCategory,
   onRenameGroup,
@@ -306,12 +338,15 @@ function BudgetKindSection({
   statuses: Map<string, CategoryStatus>;
   manage: boolean;
   defaultOpen?: boolean;
+  /** Categories currently in the transactions filter (highlighted). */
+  selectedIds: string[];
 } & SectionActions) {
   const [open, setOpen] = useState(defaultOpen);
   const [newGroup, setNewGroup] = useState("");
   const [newGroupFirst, setNewGroupFirst] = useState("");
   const actions: SectionActions = {
     onAddExpense,
+    onFilterCategory,
     onUpdateCategory,
     onDeleteCategory,
     onRenameGroup,
@@ -384,6 +419,7 @@ function BudgetKindSection({
                   .map((category) => statuses.get(category.id))
                   .filter((s): s is CategoryStatus => Boolean(s))}
                 manage={manage}
+                selectedIds={selectedIds}
                 actions={actions}
               />
             ))

@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useMemo, useState, type FormEvent } from "react";
-import { ChevronDown, Plus, Store, Trash2 } from "lucide-react";
+import { ChevronDown, Plus, Star, Store, Trash2 } from "lucide-react";
 import CategorySelect from "@/components/CategorySelect";
 import type { BudgetCategory, MerchantCategory } from "@/lib/budgetData";
 
@@ -14,12 +14,14 @@ function MappingRow({
   onChangeCategory,
   onRename,
   onDelete,
+  onToggleFavorite,
 }: {
   merchant: MerchantCategory;
   categories: BudgetCategory[];
   onChangeCategory: (id: string, categoryId: string) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
+  onToggleFavorite: (id: string, favorite: boolean) => void;
 }) {
   const [armed, setArmed] = useState(false);
 
@@ -31,6 +33,20 @@ function MappingRow({
 
   return (
     <li className="flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 dark:border-stone-700 dark:bg-stone-900">
+      <button
+        type="button"
+        onClick={() => onToggleFavorite(merchant.id, !merchant.is_favorite)}
+        aria-pressed={Boolean(merchant.is_favorite)}
+        aria-label={merchant.is_favorite ? `הסרת ${merchant.store_name} מהחנויות הנפוצות` : `סימון ${merchant.store_name} כחנות נפוצה`}
+        title={merchant.is_favorite ? "חנות נפוצה - לחצו להסרה" : "סימון כחנות נפוצה"}
+        className="shrink-0 rounded-full p-1 transition-colors hover:bg-amber-50 dark:hover:bg-stone-800"
+      >
+        <Star
+          className={`h-4 w-4 ${
+            merchant.is_favorite ? "fill-amber-400 text-amber-500" : "text-stone-300 dark:text-stone-600"
+          }`}
+        />
+      </button>
       <input
         type="text"
         key={`${merchant.id}-${merchant.store_name}`}
@@ -87,6 +103,7 @@ function StoreMappingsPanel({
   onChangeCategory,
   onRename,
   onDelete,
+  onToggleFavorite,
 }: {
   merchants: MerchantCategory[];
   categories: BudgetCategory[];
@@ -94,6 +111,7 @@ function StoreMappingsPanel({
   onChangeCategory: (id: string, categoryId: string) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
+  onToggleFavorite: (id: string, favorite: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [newStore, setNewStore] = useState("");
@@ -104,8 +122,13 @@ function StoreMappingsPanel({
     const query = search.trim().toLowerCase();
     return [...merchants]
       .filter((merchant) => !query || merchant.store_name.toLowerCase().includes(query))
-      .sort((a, b) => a.store_name.localeCompare(b.store_name, "he"));
+      .sort(
+        (a, b) =>
+          Number(Boolean(b.is_favorite)) - Number(Boolean(a.is_favorite)) ||
+          a.store_name.localeCompare(b.store_name, "he")
+      );
   }, [merchants, search]);
+  const favoriteCount = merchants.filter((merchant) => merchant.is_favorite).length;
 
   function handleAdd(event: FormEvent) {
     event.preventDefault();
@@ -129,7 +152,9 @@ function StoreMappingsPanel({
             שיוך חנויות לקטגוריות ({merchants.length})
           </span>
           <span className="block text-xs text-stone-500 dark:text-stone-400">
-            ככה המערכת יודעת שרמי לוי = סופר/מזון וש-פז = דלק
+            {favoriteCount > 0
+              ? `${favoriteCount} חנויות נפוצות ⭐ מופיעות כקיצור בטופס ההוצאה`
+              : "סמנו ב-⭐ חנויות נפוצות כדי לקבל אותן כקיצור בטופס ההוצאה"}
           </span>
         </span>
         <ChevronDown className={`h-4 w-4 shrink-0 text-stone-400 transition-transform ${open ? "rotate-180" : ""}`} />
@@ -192,6 +217,7 @@ function StoreMappingsPanel({
                   onChangeCategory={onChangeCategory}
                   onRename={onRename}
                   onDelete={onDelete}
+                  onToggleFavorite={onToggleFavorite}
                 />
               ))}
             </ul>

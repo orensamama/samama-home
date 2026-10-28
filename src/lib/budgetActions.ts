@@ -26,9 +26,12 @@ export async function saveExpense(params: {
   const { values, editingId, categories, merchants } = params;
   const store = values.store.trim();
   const category = categories.find((candidate) => candidate.id === values.category_id) ?? null;
+  // Income is stored in an income category (its amount is added to the month's
+  // income); for income the "store" field holds the source, not a shop.
+  const isIncome = category?.kind === "income";
 
   const payload = {
-    title: store || category?.name || "הוצאה",
+    title: store || category?.name || (isIncome ? "הכנסה" : "הוצאה"),
     amount: values.amount_pending ? 0 : Number(values.amount),
     amount_pending: values.amount_pending,
     expense_date: values.date,
@@ -47,7 +50,7 @@ export async function saveExpense(params: {
   }
 
   let mappingSaved = false;
-  if (store && category) {
+  if (store && category && !isIncome) {
     const known = suggestMerchant(store, merchants);
     const shouldSave = !known || (known.category_id !== category.id && values.remember_mapping);
     if (shouldSave) {
@@ -74,9 +77,13 @@ export async function upsertMerchant(storeName: string, categoryId: string) {
   );
 }
 
-export async function updateMerchant(id: string, patch: { store_name?: string; category_id?: string }) {
+export async function updateMerchant(
+  id: string,
+  patch: { store_name?: string; category_id?: string; is_favorite?: boolean }
+) {
   const next: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (patch.category_id !== undefined) next.category_id = patch.category_id;
+  if (patch.is_favorite !== undefined) next.is_favorite = patch.is_favorite;
   if (patch.store_name !== undefined) {
     next.store_name = patch.store_name.trim();
     next.store_key = normalizeStoreKey(patch.store_name);
@@ -130,7 +137,7 @@ export async function ensureBudgetSetup(): Promise<SetupResult> {
     issues.push(describeIssue(categories.error, "budget_categories"));
   }
 
-  const merchants = await supabase.from("merchant_categories").select("id, store_key, store_name, category_id").limit(1);
+  const merchants = await supabase.from("merchant_categories").select("id, store_key, store_name, category_id, is_favorite").limit(1);
   if (merchants.error && !isNetworkError(merchants.error)) issues.push(describeIssue(merchants.error, "merchant_categories"));
 
   const expenses = await supabase

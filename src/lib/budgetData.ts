@@ -28,6 +28,8 @@ export type MerchantCategory = {
   store_key: string;
   store_name: string;
   category_id: string;
+  /** Starred as a "common store" (migration 0019): shown as a quick chip in the expense form. */
+  is_favorite?: boolean;
 };
 
 // Shared query shapes, so every screen using them shares one cached fetch.
