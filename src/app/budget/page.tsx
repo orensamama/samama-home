@@ -36,7 +36,15 @@ import {
 const TRANSACTIONS_PAGE = 10;
 
 export default function BudgetPage() {
-  const { categories: categoriesTable, expenses: expensesTable, merchants: merchantsTable, setup } = useBudgetData();
+  const {
+    categories: categoriesTable,
+    expenses: expensesTable,
+    merchants: merchantsTable,
+    amounts: amountsTable,
+    overrides,
+    setup,
+  } = useBudgetData();
+  const { refetch: refetchAmounts } = amountsTable;
   const { rows: serverCategories, loading: categoriesLoading, refetch: refetchCategories } = categoriesTable;
   const { rows: expenses, refetch: refetchExpenses } = expensesTable;
   const { rows: merchants, refetch: refetchMerchants } = merchantsTable;
@@ -60,8 +68,8 @@ export default function BudgetPage() {
 
   const monthKey = monthKeyFromOffset(monthOffset);
   const summary = useMemo(
-    () => computeBudgetSummary(categories.rows, expenses, monthKey),
-    [categories.rows, expenses, monthKey]
+    () => computeBudgetSummary(categories.rows, expenses, monthKey, overrides),
+    [categories.rows, expenses, monthKey, overrides]
   );
   const categoryById = useMemo(
     () => new Map(categories.rows.map((category) => [category.id, category])),
@@ -199,6 +207,45 @@ export default function BudgetPage() {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `categories` is a fresh object each render; its methods only close over setState/serverRows
     [refetchCategories]
+  );
+
+  // A target set in a month holds from that month on (later months inherit it),
+  // while earlier months keep theirs. Falls back to the single base amount if the
+  // per-month table (migration 0020) hasn't been created yet.
+  const handleUpdateBudget = useCallback(
+    async (id: string, amount: number) => {
+      setPageError(null);
+      setShowFavoritesSql(false);
+      const { error } = await supabase
+        .from("budget_month_amounts")
+        .upsert(
+          { category_id: id, month: monthKey, amount, updated_at: new Date().toISOString() },
+          { onConflict: "category_id,month" }
+        );
+      if (!error) {
+        refetchAmounts();
+        return;
+      }
+      if (error.code === "42P01" || error.code === "PGRST205") {
+        logSupabaseError("תקציב לפי חודש (הטבלה חסרה)", error);
+        categories.patch(id, { monthly_budget: amount });
+        const { error: baseError } = await supabase.from("budget_categories").update({ monthly_budget: amount }).eq("id", id);
+        if (baseError) {
+          logSupabaseError("עדכון סעיף תקציב", baseError);
+          setPageError(friendlyErrorMessage(baseError));
+          categories.reset();
+          return;
+        }
+        refetchCategories();
+        setShowFavoritesSql(true);
+        setPageError("הסכום נשמר לכל החודשים. כדי לשמור תקציב נפרד לכל חודש, הריצו פעם אחת את ה-SQL שבכפתור שמתחת ב-Supabase.");
+        return;
+      }
+      logSupabaseError("עדכון תקציב חודשי", error);
+      setPageError(friendlyErrorMessage(error));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `categories` is a fresh object each render; its methods only close over setState/serverRows
+    [monthKey, refetchAmounts, refetchCategories]
   );
 
   const handleDeleteCategory = useCallback(
@@ -356,7 +403,7 @@ export default function BudgetPage() {
 
   return (
     <div className="flex min-h-full flex-col">
-      <PageHeader title="כלכלת המשפחה" />
+      <PageHeader title="פיננסממה" />
 
       <div className="flex flex-col gap-4 p-4 pb-28">
         {pageError && <ErrorBanner message={pageError} onDismiss={() => setPageError(null)} />}
@@ -415,10 +462,9 @@ export default function BudgetPage() {
                   style={{ width: `${Math.min(100, Math.round((summary.variableSpent / summary.variableBudget) * 100))}%` }}
                 />
               </div>
-              <p className={`text-center text-[11px] font-medium ${TONE_CLASSES[variableTone].text}`}>
-                {variableLeft >= 0
-                  ? `נשאר ${formatCurrency(variableLeft)} בתקציב המשתנות`
-                  : `חריגה של ${formatCurrency(-variableLeft)} בתקציב המשתנות`}
+              <p className={`text-center text-xs font-medium ${TONE_CLASSES[variableTone].text}`}>
+                {`הוצאנו ${formatCurrency(summary.variableSpent)} מתוך ${formatCurrency(summary.variableBudget)}`}
+                {variableLeft < 0 && ` · חריגה ${formatCurrency(-variableLeft)}`}
               </p>
             </div>
           )}
@@ -468,6 +514,7 @@ export default function BudgetPage() {
               manage={manage}
               onAddExpense={openNewExpense}
               onUpdateCategory={handleUpdateCategory}
+              onUpdateBudget={handleUpdateBudget}
               onDeleteCategory={handleDeleteCategory}
               onRenameGroup={handleRenameGroup}
               onDeleteGroup={handleDeleteGroup}

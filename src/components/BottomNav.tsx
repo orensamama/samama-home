@@ -7,7 +7,7 @@ import {
   ListChecks,
   ShoppingCart,
   CalendarDays,
-  PiggyBank,
+  Wallet,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -15,7 +15,7 @@ const NAV_ITEMS = [
   { href: "/tasks", label: "משימות", icon: ListChecks },
   { href: "/shopping", label: "קניות", icon: ShoppingCart },
   { href: "/events", label: "אירועים", icon: CalendarDays },
-  { href: "/budget", label: "כלכלה", icon: PiggyBank },
+  { href: "/budget", label: "פיננסממה", icon: Wallet },
 ];
 
 export default function BottomNav() {

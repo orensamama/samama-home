@@ -17,7 +17,7 @@ export default function BudgetSetupBanner({ setup }: { setup: BudgetSetupStatus 
   if (setup.checking) {
     return (
       <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
-        בודק את הגדרות כלכלת המשפחה...
+        בודק את הגדרות פיננסממה...
       </div>
     );
   }

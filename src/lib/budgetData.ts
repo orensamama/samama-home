@@ -77,9 +77,44 @@ export function defaultDateForMonth(key: string): string {
 export type CategoryStatus = {
   category: BudgetCategory;
   spent: number; // for income categories: what was actually received
-  budget: number;
+  budget: number; // the target for this month (see budgetForMonth)
   ratio: number; // spent / budget (0 when there's no budget)
+  /**
+   * What counts toward the month's picture: income = received, or the expected
+   * amount if nothing was logged yet; fixed/sinking = the larger of paid and
+   * planned (committed even before it's paid); variable = what was spent.
+   */
+  committed: number;
 };
+
+/** A per-month override of a category's target (table budget_month_amounts, migration 0020). */
+export type BudgetMonthAmount = { category_id: string; month: string; amount: number };
+
+/** category id -> that category's overrides, oldest month first. */
+export type BudgetOverrides = Map<string, { month: string; amount: number }[]>;
+
+export function buildBudgetOverrides(rows: BudgetMonthAmount[]): BudgetOverrides {
+  const map: BudgetOverrides = new Map();
+  for (const row of rows) {
+    const list = map.get(row.category_id) ?? [];
+    list.push({ month: row.month, amount: Number(row.amount) || 0 });
+    map.set(row.category_id, list);
+  }
+  for (const list of map.values()) list.sort((a, b) => a.month.localeCompare(b.month));
+  return map;
+}
+
+/** The override in force for `monthKey`: the latest one set for that month or earlier. */
+function overrideFor(overrides: BudgetOverrides | undefined, categoryId: string, monthKey: string): number | null {
+  const list = overrides?.get(categoryId);
+  if (!list) return null;
+  let found: number | null = null;
+  for (const entry of list) {
+    if (entry.month <= monthKey) found = entry.amount;
+    else break;
+  }
+  return found;
+}
 
 export type BudgetSummary = {
   statuses: Map<string, CategoryStatus>;
@@ -96,23 +131,58 @@ export type BudgetSummary = {
 
 const amountOf = (expense: BudgetExpense) => (expense.amount_pending ? 0 : Number(expense.amount) || 0);
 
+/**
+ * Month-to-month carry-over. A category's target for a month is, in order:
+ *  1. the latest per-month override set for that month or an earlier one;
+ *  2. its base `monthly_budget` when that's above zero;
+ *  3. for fixed expenses and income that never had a target: what was actually
+ *     logged in the most recent earlier month -- so recurring items don't reset
+ *     to 0 on the 1st of a new month.
+ * Editing a month writes an override, which later months inherit.
+ */
 export function computeBudgetSummary(
   categories: BudgetCategory[],
   expenses: BudgetExpense[],
-  monthKey: string
+  monthKey: string,
+  overrides?: BudgetOverrides
 ): BudgetSummary {
   const spentByCategory = new Map<string, number>();
+  // category -> month -> total, to find "what was logged last month" for recurring items
+  const monthlyTotals = new Map<string, Map<string, number>>();
+  const categoryIds = new Set(categories.map((category) => category.id));
   let uncategorizedSpent = 0;
   let totalSpent = 0;
 
   for (const expense of expenses) {
-    if (!expense.date.startsWith(monthKey)) continue;
     const amount = amountOf(expense);
-    if (expense.category_id && categories.some((category) => category.id === expense.category_id)) {
+    const month = expense.date.slice(0, 7);
+    if (expense.category_id && categoryIds.has(expense.category_id) && amount > 0 && month < monthKey) {
+      const months = monthlyTotals.get(expense.category_id) ?? new Map<string, number>();
+      months.set(month, (months.get(month) ?? 0) + amount);
+      monthlyTotals.set(expense.category_id, months);
+    }
+    if (!expense.date.startsWith(monthKey)) continue;
+    if (expense.category_id && categoryIds.has(expense.category_id)) {
       spentByCategory.set(expense.category_id, (spentByCategory.get(expense.category_id) ?? 0) + amount);
     } else {
       uncategorizedSpent += amount;
     }
+  }
+
+  function targetFor(category: BudgetCategory): number {
+    if (category.is_hidden) return 0;
+    const override = overrideFor(overrides, category.id, monthKey);
+    if (override !== null) return override;
+    const base = Number(category.monthly_budget) || 0;
+    if (base > 0) return base;
+    if (category.kind === "income" || category.kind === "fixed") {
+      const months = monthlyTotals.get(category.id);
+      if (months && months.size > 0) {
+        const latest = Array.from(months.keys()).sort().pop() as string;
+        return Math.round((months.get(latest) ?? 0) * 100) / 100;
+      }
+    }
+    return 0;
   }
 
   const statuses = new Map<string, CategoryStatus>();
@@ -124,17 +194,17 @@ export function computeBudgetSummary(
 
   for (const category of categories) {
     const spent = spentByCategory.get(category.id) ?? 0;
-    const budget = category.is_hidden ? 0 : Number(category.monthly_budget) || 0;
-    statuses.set(category.id, { category, spent, budget, ratio: budget > 0 ? spent / budget : 0 });
+    const budget = targetFor(category);
+    const committed =
+      category.kind === "income" ? (spent > 0 ? spent : budget) : category.kind === "variable" ? spent : Math.max(spent, budget);
+    statuses.set(category.id, { category, spent, budget, ratio: budget > 0 ? spent / budget : 0, committed });
 
     if (category.kind === "income") {
-      // Received so far if anything was logged, otherwise the expected amount.
-      income += spent > 0 ? spent : budget;
+      income += committed;
     } else {
       totalSpent += spent;
-      // Fixed/sinking money is committed for the month even before it's paid.
-      if (category.kind === "fixed") fixedCommitted += Math.max(spent, budget);
-      else if (category.kind === "sinking") sinkingCommitted += Math.max(spent, budget);
+      if (category.kind === "fixed") fixedCommitted += committed;
+      else if (category.kind === "sinking") sinkingCommitted += committed;
       else {
         variableSpent += spent;
         variableBudget += budget;
@@ -379,3 +449,36 @@ export type ExpenseFormValues = {
   /** Re-learn store -> category after the user overrode a remembered one. */
   remember_mapping: boolean;
 };
+
+// ---------------------------------------------------------------------------
+// Price display / single price tag
+// ---------------------------------------------------------------------------
+
+export type OcrWord = { text: string; confidence: number; bbox: { x0: number; y0: number; x1: number; y1: number } };
+
+/**
+ * For a photo of a cash-register display, a shelf price tag or a screenshot --
+ * where there's no receipt structure -- the amount is the most prominent number:
+ * the price-looking token printed in the tallest characters. Returns null when
+ * nothing price-like was read confidently.
+ */
+export function pickProminentAmount(words: OcrWord[]): number | null {
+  let best: { value: number; height: number; confidence: number } | null = null;
+  for (const word of words) {
+    if (word.confidence < 40) continue;
+    const text = word.text.replace(/[₪\s]|ש"ח|ש״ח|שח|nis/gi, "").replace(/^[-:=*]+|[-:=*.,]+$/g, "");
+    if (!/^\d{1,6}([.,]\d{1,2})?$/.test(text)) continue; // not a price (also drops barcodes / long ids)
+    const value = Number(text.replace(",", "."));
+    if (!(value > 0) || value > 100000) continue;
+    const height = word.bbox.y1 - word.bbox.y0;
+    if (
+      !best ||
+      height > best.height * 1.05 ||
+      (height >= best.height * 0.95 && word.confidence > best.confidence + 10) ||
+      (Math.abs(height - best.height) <= best.height * 0.05 && value > best.value && word.confidence >= best.confidence - 10)
+    ) {
+      best = { value, height, confidence: word.confidence };
+    }
+  }
+  return best ? best.value : null;
+}

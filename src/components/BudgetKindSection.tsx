@@ -20,12 +20,14 @@ const BUDGET_FIELD_LABEL: Record<BudgetKind, string> = {
   sinking: "הפרשה חודשית",
 };
 
-export type CategoryPatch ={ name?: string; monthly_budget?: number; is_hidden?: boolean };
+export type CategoryPatch = { name?: string; is_hidden?: boolean };
 
 type SectionActions = {
   onAddExpense: (categoryId: string) => void;
   onFilterCategory: (categoryId: string) => void;
   onUpdateCategory: (id: string, patch: CategoryPatch) => void;
+  /** Sets the target from the viewed month on (later months inherit it). */
+  onUpdateBudget: (id: string, amount: number) => void;
   onDeleteCategory: (id: string) => void;
   onRenameGroup: (kind: BudgetKind, oldName: string, newName: string) => void;
   onDeleteGroup: (kind: BudgetKind, groupName: string) => void;
@@ -65,7 +67,7 @@ function ConfirmDeleteButton({ onConfirm, label }: { onConfirm: () => void; labe
 function ProgressBar({ ratio, tone, thin = false }: { ratio: number; tone: keyof typeof TONE_CLASSES; thin?: boolean }) {
   return (
     // spans, so it can sit inside the clickable row button
-    <span className={`block w-full overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800 ${thin ? "h-1" : "h-1.5"}`}>
+    <span className={`block w-full overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800 ${thin ? "h-1" : "h-2"}`}>
       <span
         className={`block h-full rounded-full transition-all ${TONE_CLASSES[tone].bar}`}
         style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }}
@@ -86,8 +88,8 @@ function CategoryRow({
   selected: boolean;
   actions: SectionActions;
 }) {
-  const { category, spent, budget, ratio } = status;
-  const isIncome = category.kind === "income";
+  const { category, spent, budget, ratio, committed } = status;
+  const kind = category.kind;
   const [saved, setSaved] = useState(false);
 
   // A brief checkmark after an edit is committed, since saving happens on blur.
@@ -97,21 +99,12 @@ function CategoryRow({
     return () => clearTimeout(timeout);
   }, [saved]);
   const flashSaved = () => setSaved(true);
-  // Income is "good" when it arrives: green once the expected amount is in.
-  const tone = isIncome
-    ? budget > 0 && spent >= budget
-      ? "green"
-      : spent > 0
-        ? "orange"
-        : "neutral"
-    : progressTone(spent, budget);
-  const overBy = !isIncome && budget > 0 && spent > budget ? spent - budget : 0;
 
   if (manage) {
     const commitBudget = (input: HTMLInputElement) => {
       const value = Number(input.value || 0);
-      if (!Number.isNaN(value) && value >= 0 && value !== Number(category.monthly_budget)) {
-        actions.onUpdateCategory(category.id, { monthly_budget: value });
+      if (!Number.isNaN(value) && value >= 0 && value !== budget) {
+        actions.onUpdateBudget(category.id, value);
         flashSaved();
       }
     };
@@ -138,10 +131,10 @@ function CategoryRow({
             type="number"
             inputMode="decimal"
             min="0"
-            key={`budget-${category.id}-${category.monthly_budget}`}
-            defaultValue={Number(category.monthly_budget) || ""}
+            key={`budget-${category.id}-${budget}`}
+            defaultValue={budget || ""}
             placeholder="0"
-            aria-label={`${BUDGET_FIELD_LABEL[category.kind]} - ${category.name}`}
+            aria-label={`${BUDGET_FIELD_LABEL[kind]} - ${category.name}`}
             onFocus={(event) => event.target.select()}
             onBlur={(event) => commitBudget(event.target)}
             onKeyDown={(event) => {
@@ -169,51 +162,82 @@ function CategoryRow({
     );
   }
 
+  const filterClass = `flex min-w-0 flex-1 flex-col gap-1.5 rounded-lg px-2 py-1.5 text-right transition-colors ${
+    selected
+      ? "bg-amber-50 ring-1 ring-amber-300 dark:bg-amber-950/20 dark:ring-amber-800"
+      : "hover:bg-stone-50 dark:hover:bg-stone-800/50"
+  }`;
+  const addButton = (
+    <button
+      type="button"
+      onClick={() => actions.onAddExpense(category.id)}
+      aria-label={kind === "income" ? `רישום הכנסה - ${category.name}` : `הוספת הוצאה - ${category.name}`}
+      className="shrink-0 rounded-full p-1 text-stone-300 transition-colors hover:bg-amber-100 hover:text-amber-600 dark:text-stone-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
+    >
+      <Plus className="h-4 w-4" />
+    </button>
+  );
+
+  // Recurring items (income, fixed, savings): one calm line, never "0" -- the planned
+  // amount carries over from month to month and turns "paid/received" once logged.
+  if (kind !== "variable") {
+    const done = spent > 0 && (kind === "income" || spent >= budget);
+    const tag = committed <= 0 ? null : done ? (kind === "income" ? "התקבל" : "שולם") : "צפוי";
+    return (
+      <li className="flex items-center gap-1 py-0.5">
+        <button
+          type="button"
+          onClick={() => actions.onFilterCategory(category.id)}
+          aria-pressed={selected}
+          aria-label={`הצגת התנועות של ${category.name}`}
+          className={`${filterClass} !flex-row items-center gap-2`}
+        >
+          <span className="min-w-0 flex-1 truncate text-sm text-stone-800 dark:text-stone-100">
+            {category.name}
+            {category.is_hidden && <span className="mr-1.5 text-[10px] text-stone-400">(מוסתר)</span>}
+          </span>
+          {tag && (
+            <span className={`shrink-0 text-[11px] ${done ? "font-medium text-emerald-600 dark:text-emerald-400" : "text-stone-400 dark:text-stone-500"}`}>
+              {tag}
+            </span>
+          )}
+          <span className="shrink-0 text-sm font-semibold tabular-nums text-stone-800 dark:text-stone-100">
+            {committed > 0 ? formatCurrency(committed) : "—"}
+          </span>
+        </button>
+        {addButton}
+      </li>
+    );
+  }
+
+  const tone = progressTone(spent, budget);
+  const overBy = budget > 0 && spent > budget ? spent - budget : 0;
   return (
-    <li className="flex items-start gap-1 py-1">
+    <li className="flex items-start gap-1 py-0.5">
       {/* Tap the row: the transactions list below filters to this category. */}
       <button
         type="button"
         onClick={() => actions.onFilterCategory(category.id)}
         aria-pressed={selected}
         aria-label={`הצגת התנועות של ${category.name}`}
-        className={`flex min-w-0 flex-1 flex-col gap-1.5 rounded-lg px-2 py-1.5 text-right transition-colors ${
-          selected
-            ? "bg-amber-50 ring-1 ring-amber-300 dark:bg-amber-950/20 dark:ring-amber-800"
-            : "hover:bg-stone-50 dark:hover:bg-stone-800/50"
-        }`}
+        className={filterClass}
       >
         <span className="flex items-baseline gap-2">
           <span className="min-w-0 flex-1 truncate text-sm text-stone-800 dark:text-stone-100">
             {category.name}
             {category.is_hidden && <span className="mr-1.5 text-[10px] text-stone-400">(מוסתר)</span>}
           </span>
-          <span className={`shrink-0 text-sm font-semibold tabular-nums ${TONE_CLASSES[tone].text}`}>
-            {formatCurrency(spent)}
+          <span className="shrink-0 text-sm tabular-nums">
+            <span className={`font-semibold ${TONE_CLASSES[tone].text}`}>{formatCurrency(spent)}</span>
+            {budget > 0 && <span className="text-xs text-stone-400 dark:text-stone-500"> מתוך {formatCurrency(budget)}</span>}
           </span>
-          {budget > 0 && (
-            <span className="shrink-0 text-xs tabular-nums text-stone-400 dark:text-stone-500">
-              / {formatCurrency(budget)}
-            </span>
-          )}
         </span>
-        {(budget > 0 || spent > 0) && <ProgressBar ratio={budget > 0 ? ratio : 1} tone={tone} />}
-        {budget > 0 && !isIncome && (
-          <span className={`text-[11px] font-medium tabular-nums ${overBy > 0 ? "text-rose-600 dark:text-rose-400" : "text-stone-400 dark:text-stone-500"}`}>
-            {overBy > 0
-              ? `חריגה של ${formatCurrency(overBy)} · ${Math.round(ratio * 100)}% ניצול`
-              : `${Math.round(ratio * 100)}% ניצול · נשאר ${formatCurrency(budget - spent)}`}
-          </span>
+        {budget > 0 && <ProgressBar ratio={ratio} tone={tone} />}
+        {overBy > 0 && (
+          <span className="text-[11px] font-medium text-rose-600 dark:text-rose-400">חריגה של {formatCurrency(overBy)}</span>
         )}
       </button>
-      <button
-        type="button"
-        onClick={() => actions.onAddExpense(category.id)}
-        aria-label={isIncome ? `רישום הכנסה - ${category.name}` : `הוספת הוצאה - ${category.name}`}
-        className="mt-1.5 shrink-0 rounded-full p-1 text-stone-300 transition-colors hover:bg-amber-100 hover:text-amber-600 dark:text-stone-600 dark:hover:bg-amber-950/40 dark:hover:text-amber-400"
-      >
-        <Plus className="h-4 w-4" />
-      </button>
+      <span className="mt-1.5">{addButton}</span>
     </li>
   );
 }
@@ -263,7 +287,7 @@ function GroupBlock({
             className="min-w-0 flex-1 rounded-lg border border-amber-300 bg-white px-2 py-1 text-xs font-bold text-stone-700 outline-none dark:bg-stone-950 dark:text-stone-200"
           />
         ) : (
-          <h4 className="min-w-0 flex-1 truncate text-xs font-semibold text-stone-400 dark:text-stone-500">{groupName}</h4>
+          <h4 className="min-w-0 flex-1 truncate px-2 text-[11px] font-semibold text-stone-400 dark:text-stone-500">{groupName}</h4>
         )}
         {manage && !renaming && (
           <>
@@ -283,7 +307,7 @@ function GroupBlock({
         )}
       </div>
 
-      <ul className="divide-y divide-stone-100 dark:divide-stone-800">
+      <ul>
         {statuses.map((status) => (
           <CategoryRow
             key={status.category.id}
@@ -328,6 +352,7 @@ function BudgetKindSection({
   onAddExpense,
   onFilterCategory,
   onUpdateCategory,
+  onUpdateBudget,
   onDeleteCategory,
   onRenameGroup,
   onDeleteGroup,
@@ -348,6 +373,7 @@ function BudgetKindSection({
     onAddExpense,
     onFilterCategory,
     onUpdateCategory,
+    onUpdateBudget,
     onDeleteCategory,
     onRenameGroup,
     onDeleteGroup,
@@ -365,7 +391,9 @@ function BudgetKindSection({
   const kindStatuses = shown.map((category) => statuses.get(category.id)).filter((s): s is CategoryStatus => Boolean(s));
   const totalBudget = kindStatuses.reduce((sum, status) => sum + status.budget, 0);
   const totalSpent = kindStatuses.reduce((sum, status) => sum + status.spent, 0);
-  const headerTone = kind === "income" ? "green" : progressTone(totalSpent, totalBudget);
+  const totalCommitted = kindStatuses.reduce((sum, status) => sum + status.committed, 0);
+  const isVariable = kind === "variable";
+  const headerTone = progressTone(totalSpent, totalBudget);
 
   function handleAddGroup(event: FormEvent) {
     event.preventDefault();
@@ -383,31 +411,38 @@ function BudgetKindSection({
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-4 py-3 text-right"
+        className="flex w-full flex-col gap-2 px-4 py-3 text-right"
       >
-        <span className="min-w-0 flex-1 text-sm font-bold text-stone-800 dark:text-stone-100">
-          {KIND_META[kind].short}
-        </span>
-        <span className={`shrink-0 text-sm font-semibold tabular-nums ${TONE_CLASSES[headerTone].text}`}>
-          {formatCurrency(totalSpent)}
-        </span>
-        {totalBudget > 0 && (
-          <span className="shrink-0 text-xs tabular-nums text-stone-400 dark:text-stone-500">
-            / {formatCurrency(totalBudget)}
+        <span className="flex w-full items-center gap-2">
+          <span className="min-w-0 flex-1 text-sm font-bold text-stone-800 dark:text-stone-100">
+            {KIND_META[kind].short}
           </span>
-        )}
-        <ChevronDown className={`h-4 w-4 shrink-0 text-stone-400 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          {isVariable ? (
+            <span className="shrink-0 text-sm tabular-nums">
+              <span className={`font-semibold ${TONE_CLASSES[headerTone].text}`}>{formatCurrency(totalSpent)}</span>
+              {totalBudget > 0 && (
+                <span className="text-xs text-stone-400 dark:text-stone-500"> מתוך {formatCurrency(totalBudget)}</span>
+              )}
+            </span>
+          ) : (
+            <span className="shrink-0 text-sm font-semibold tabular-nums text-stone-800 dark:text-stone-100">
+              {formatCurrency(totalCommitted)}
+            </span>
+          )}
+          <ChevronDown className={`h-4 w-4 shrink-0 text-stone-400 transition-transform ${expanded ? "rotate-180" : ""}`} />
+        </span>
+        {isVariable && totalBudget > 0 && <ProgressBar ratio={totalSpent / totalBudget} tone={headerTone} />}
       </button>
 
       {expanded && (
-        <div className="border-t border-stone-100 px-4 pb-3 dark:border-stone-800">
+        <div className="border-t border-stone-100 px-2 pb-3 dark:border-stone-800">
           {manage && (
-            <p className="mt-3 rounded-lg bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
-              {BUDGET_FIELD_LABEL[kind]}: הקלידו סכום בכל סעיף - נשמר אוטומטית ✓
+            <p className="mx-2 mt-3 rounded-lg bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+              {BUDGET_FIELD_LABEL[kind]}: הקלידו סכום - נשמר אוטומטית ותקף מהחודש הזה והלאה ✓
             </p>
           )}
           {groups.length === 0 && !manage ? (
-            <p className="pt-3 text-xs text-stone-400 dark:text-stone-500">אין סעיפים. אפשר להוסיף במצב עריכה.</p>
+            <p className="px-2 pt-3 text-xs text-stone-400 dark:text-stone-500">אין סעיפים. אפשר להוסיף במצב עריכה.</p>
           ) : (
             groups.map((group) => (
               <GroupBlock
@@ -428,7 +463,7 @@ function BudgetKindSection({
           {manage && (
             <form
               onSubmit={handleAddGroup}
-              className="mt-3 flex flex-col gap-1.5 border-t border-dashed border-stone-200 pt-3 dark:border-stone-700"
+              className="mx-2 mt-3 flex flex-col gap-1.5 border-t border-dashed border-stone-200 pt-3 dark:border-stone-700"
             >
               <p className="text-xs font-medium text-stone-500 dark:text-stone-400">
                 {`קבוצה חדשה ב"${KIND_META[kind].short}"`}

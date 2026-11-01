@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Plus, Wallet } from "lucide-react";
 import ExpenseFormModal from "@/components/ExpenseFormModal";
 import { SkeletonBlock } from "@/components/Skeleton";
 import { useBudgetData } from "@/lib/useBudget";
@@ -23,14 +23,14 @@ import {
  * The card opens the budget tab; the button opens the quick-entry form in place.
  */
 export default function BudgetWidget() {
-  const { categories, expenses, merchants, setup } = useBudgetData();
+  const { categories, expenses, merchants, overrides, setup } = useBudgetData();
   const [showForm, setShowForm] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const monthKey = monthKeyFromOffset(0);
   const summary = useMemo(
-    () => computeBudgetSummary(categories.rows, expenses.rows, monthKey),
-    [categories.rows, expenses.rows, monthKey]
+    () => computeBudgetSummary(categories.rows, expenses.rows, monthKey, overrides),
+    [categories.rows, expenses.rows, monthKey, overrides]
   );
 
   if (categories.loading && categories.rows.length === 0) {
@@ -72,13 +72,14 @@ export default function BudgetWidget() {
         <div aria-hidden="true" className="pointer-events-none absolute -left-8 -top-10 h-28 w-28 rounded-full bg-white/20 blur-2xl" />
 
         {/* The card navigates to the budget tab; the button sits above this layer. */}
-        <Link href="/budget" aria-label="מעבר לכלכלת המשפחה" className="absolute inset-0 z-0" />
+        <Link href="/budget" aria-label="מעבר לפיננסממה" className="absolute inset-0 z-0" />
 
         <div className="pointer-events-none relative z-10 flex flex-col gap-2">
           <div className="flex items-end justify-between gap-3">
             <div className="min-w-0">
-              <p className="truncate text-xs font-medium text-white/80">
-                יתרת תקציב פנויה · {formatMonthKey(monthKey)}
+              <p className="flex items-center gap-1.5 text-xs font-medium text-white/85">
+                <Wallet className="h-4 w-4 shrink-0" />
+                <span className="truncate">יתרת תקציב פנויה · {formatMonthKey(monthKey)}</span>
               </p>
               {needsSetup ? (
                 <p className="mt-0.5 text-sm font-semibold">נדרשת הגדרה קצרה - לחצו להמשך</p>

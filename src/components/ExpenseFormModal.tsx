@@ -10,6 +10,8 @@ import {
   formatReceiptItems,
   normalizeStoreKey,
   parseReceiptText,
+  pickProminentAmount,
+  type OcrWord,
   suggestMerchant,
   type BudgetCategory,
   type BudgetExpense,
@@ -325,16 +327,38 @@ export default function ExpenseFormModal({
     setScanMessage("סורק את הקבלה... (בפעם הראשונה ההורדה של מנוע הזיהוי לוקחת רגע)");
     try {
       const image = await prepareForOcr(file);
-      const { createWorker } = await import("tesseract.js");
+      const { createWorker, PSM } = await import("tesseract.js");
       const worker = await createWorker("heb+eng");
-      const { data } = await worker.recognize(image);
-      await worker.terminate();
+      const flatten = (page: { blocks: { paragraphs: { lines: { words: OcrWord[] }[] }[] }[] | null }) =>
+        (page.blocks ?? []).flatMap((block) => block.paragraphs.flatMap((p) => p.lines.flatMap((line) => line.words)));
+      const { data } = await worker.recognize(image, {}, { text: true, blocks: true });
       const parsed = parseReceiptText(data.text);
       const details = formatReceiptItems(parsed.items);
 
+      // A full receipt has many lines and a recognisable total. A cash-register display,
+      // a price tag or a screenshot doesn't -- there the amount is the most prominent number.
+      const lineCount = data.text.split("\n").filter((line) => line.trim()).length;
+      const looksLikeReceipt = lineCount > 6 && parsed.amount !== null;
+      let words = flatten(data);
+      let prominent = pickProminentAmount(words);
+      if (!looksLikeReceipt && prominent === null) {
+        // Second look, digits only: much better at big LCD/price-tag numbers.
+        try {
+          await worker.setParameters({ tessedit_char_whitelist: "0123456789.,", tessedit_pageseg_mode: PSM.SPARSE_TEXT });
+          const second = await worker.recognize(image, {}, { text: true, blocks: true });
+          words = [...words, ...flatten(second.data)];
+          prominent = pickProminentAmount(words);
+        } catch (err) {
+          console.error("[OCR] מעבר שני (ספרות):", err);
+        }
+      }
+      await worker.terminate();
+      const amountFound = looksLikeReceipt ? parsed.amount : (prominent ?? parsed.amount);
+      const fromProminent = amountFound !== null && amountFound === prominent && !looksLikeReceipt;
+
       setValues((v) => {
         const next = { ...v };
-        if (parsed.amount !== null && (v.amount === "" || Number(v.amount) === 0)) next.amount = String(parsed.amount);
+        if (amountFound !== null && (v.amount === "" || Number(v.amount) === 0)) next.amount = String(amountFound);
         if (parsed.store && !v.store.trim()) next.store = parsed.store;
         if (parsed.date) next.date = parsed.date;
         if (details && !v.notes.includes("פירוט קנייה")) {
@@ -344,7 +368,7 @@ export default function ExpenseFormModal({
       });
 
       const found: string[] = [];
-      if (parsed.amount !== null) found.push(`סכום ${parsed.amount}`);
+      if (amountFound !== null) found.push(`סכום ${amountFound}${fromProminent ? " (המספר הבולט בתמונה)" : ""}`);
       if (parsed.store) found.push(`חנות "${parsed.store}"`);
       if (parsed.date) found.push(`תאריך ${parsed.date}`);
       if (parsed.items.length > 0) found.push(`${parsed.items.length} פריטים`);

@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { ensureBudgetSetup, type SetupIssue, type SetupResult } from "@/lib/budgetActions";
 import {
+  buildBudgetOverrides,
   CATEGORY_ORDER,
+  type BudgetMonthAmount,
   EXPENSE_ORDER,
   EXPENSE_SELECT,
   type BudgetCategory,
@@ -34,6 +36,10 @@ export function useBudgetData() {
   const categories = useSupabaseTable<BudgetCategory>("budget_categories", "*", CATEGORY_ORDER);
   const expenses = useSupabaseTable<BudgetExpense>("expenses", EXPENSE_SELECT, EXPENSE_ORDER);
   const merchants = useSupabaseTable<MerchantCategory>("merchant_categories");
+  // Per-month target overrides (migration 0020). If the table doesn't exist yet this
+  // just stays empty and the base monthly_budget applies -- not a setup problem.
+  const amounts = useSupabaseTable<BudgetMonthAmount>("budget_month_amounts");
+  const overrides = useMemo(() => buildBudgetOverrides(amounts.rows), [amounts.rows]);
 
   const [result, setResult] = useState<SetupResult | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -77,5 +83,5 @@ export function useBudgetData() {
     recheck,
   };
 
-  return { categories, expenses, merchants, setup: status };
+  return { categories, expenses, merchants, amounts, overrides, setup: status };
 }
