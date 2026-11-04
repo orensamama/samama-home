@@ -648,3 +648,21 @@ export function draftFromText(text: string): RecipeDraft {
     original_text: text.trim(),
   };
 }
+
+/** An existing recipe as an editable draft (id and timestamps dropped). */
+export function recipeToDraft(recipe: Recipe): RecipeDraft {
+  return {
+    title: recipe.title,
+    categories: recipe.categories,
+    servings: recipe.servings,
+    ingredients: recipe.ingredients,
+    instructions: recipe.instructions,
+    tips: recipe.tips,
+    description: recipe.description,
+    source_url: recipe.source_url,
+    embed_url: recipe.embed_url,
+    image_url: recipe.image_url,
+    original_text: recipe.original_text,
+    is_favorite: recipe.is_favorite,
+  };
+}

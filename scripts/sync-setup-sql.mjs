@@ -12,6 +12,7 @@ const migrations = [
   "0019_merchant_favorites.sql",
   "0020_budget_month_amounts.sql",
   "0021_recipes.sql",
+  "0023_recipes_reconcile_schema.sql",
   "0022_enable_rls_everywhere.sql",
 ];
 const target = join(root, "src", "lib", "generated", "setupSql.ts");

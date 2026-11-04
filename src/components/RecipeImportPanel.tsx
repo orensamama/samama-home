@@ -3,8 +3,9 @@
 import { useState, type ChangeEvent } from "react";
 import { FileUp, Link2, ScrollText, TriangleAlert, X } from "lucide-react";
 import RecipeTagPicker from "@/components/RecipeTagPicker";
-import { draftFromLink, fetchLinkInfo, insertRecipe, patchRecipe } from "@/lib/recipeActions";
+import { draftFromLink, fetchLinkInfo, insertRecipe, saveRecipeDraft } from "@/lib/recipeActions";
 import {
+  recipeToDraft,
   embedFromUrl,
   emptyDraft,
   extractChatRecipes,
@@ -177,6 +178,13 @@ export default function RecipeImportPanel({
     setItems((current) => current.map((item) => (item.key === key ? { ...item, ...patch } : item)));
   }
 
+  // One choice for every item that matches a recipe already in the book -- including
+  // identical ones, so a repeat import can replace what was saved before.
+  function applyToAllDuplicates(action: ImportAction) {
+    setItems((current) => current.map((item) => (item.dup ? { ...item, action, include: true } : item)));
+  }
+  const duplicateCount = items.filter((item) => item.dup).length;
+
   async function handleImport() {
     setStage("saving");
     for (const tag of tags) if (!allTags.includes(tag)) onCreateTag(tag);
@@ -185,29 +193,39 @@ export default function RecipeImportPanel({
     let updated = 0;
     let skipped = 0;
     const failures: string[] = [];
+    let firstError: { code?: string; message: string } | null = null;
     for (const item of items) {
       if (!item.include || item.action === "skip") {
         skipped++;
         continue;
       }
       const draft: RecipeDraft = { ...item.draft, categories: Array.from(new Set([...item.draft.categories, ...tags])) };
-      let failed = false;
+      let saveError: { code?: string; message: string } | null = null;
       if (item.action === "new" || !item.dup) {
-        failed = Boolean((await insertRecipe(draft)).error);
-        if (!failed) added++;
+        saveError = (await insertRecipe(draft)).error;
+        if (!saveError) added++;
       } else {
+        // Merge fills what's missing; replace takes the chat's version. Either way the whole recipe is saved.
         const patch = item.action === "merge" ? mergeIntoExisting(item.dup.existing, draft) : replaceWithNewer(item.dup.existing, draft);
-        failed = Boolean((await patchRecipe(item.dup.existing.id, patch)).error);
-        if (!failed) updated++;
+        saveError = (await saveRecipeDraft(item.dup.existing.id, { ...recipeToDraft(item.dup.existing), ...patch })).error;
+        if (!saveError) updated++;
       }
-      if (failed) failures.push(draft.title || "מתכון");
+      if (saveError) {
+        failures.push(draft.title || "מתכון");
+        firstError = firstError ?? saveError;
+      }
     }
 
     const lines = [`נוספו ${added} מתכונים חדשים`];
     if (updated > 0) lines.push(`עודכנו ${updated} מתכונים קיימים`);
     if (skipped > 0) lines.push(`דולגו ${skipped}`);
     if (mergedInFile > 0) lines.push(`${mergedInFile} כפילויות בתוך הקובץ אוחדו (נשמרה הגרסה האחרונה)`);
-    if (failures.length > 0) lines.push(`נכשלה שמירה של: ${failures.join(", ")} (ודאו שה-SQL של ספר המתכונים הורץ)`);
+    if (failures.length > 0) {
+      const reason = firstError as { code?: string; message: string } | null;
+      lines.push(`נכשלה שמירה של ${failures.length} פריטים: ${failures.slice(0, 5).join(", ")}${failures.length > 5 ? "..." : ""}`);
+      if (reason) lines.push(`הסיבה: ${reason.message}${reason.code ? ` (קוד ${reason.code})` : ""}`);
+      lines.push("פרטים מלאים בקונסול של הדפדפן (F12) תחת [Supabase] recipes. אם חסרה עמודה או הרשאה - הריצו את ה-SQL של ספר המתכונים (כפתור \"העתק SQL\" בעמוד המתכונים).");
+    }
     setSummary(lines);
     setStage("done");
     onDone();
@@ -280,6 +298,33 @@ export default function RecipeImportPanel({
                 <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">תגיות לכל המתכונים המיובאים (לא חובה)</p>
                 <RecipeTagPicker allTags={allTags} selected={tags} onChange={setTags} />
               </div>
+
+              {duplicateCount > 0 && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/40 dark:bg-amber-950/20">
+                  <p className="mb-1.5 text-xs font-medium text-amber-800 dark:text-amber-300">
+                    {duplicateCount} פריטים כבר קיימים בספר (גם זהים). לייבוא מחדש והחלפה - בחרו לכולם:
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        ["skip", "דלג על הכול"],
+                        ["merge", "מזג הכול"],
+                        ["replace", "החלף את הקיימים"],
+                        ["new", "שמור כנפרדים"],
+                      ] as [ImportAction, string][]
+                    ).map(([action, label]) => (
+                      <button
+                        key={action}
+                        type="button"
+                        onClick={() => applyToAllDuplicates(action)}
+                        className="rounded-full border border-amber-300 bg-white px-3 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:bg-stone-900 dark:text-amber-300"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <ul className="flex flex-col gap-2">
                 {items.map((item) => (

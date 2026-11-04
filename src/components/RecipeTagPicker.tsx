@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { Plus } from "lucide-react";
 
 /** Multi-select tag chips (a recipe can carry any number of categories) with an inline "new tag". */
@@ -24,8 +24,8 @@ export default function RecipeTagPicker({
     onChange(selected.includes(name) ? selected.filter((tag) => tag !== name) : [...selected, name]);
   }
 
-  function handleCreate(event: FormEvent) {
-    event.preventDefault();
+  // Not a <form>: this picker lives inside the recipe form, and forms can't nest.
+  function handleCreate() {
     const name = draft.trim();
     if (!name) return;
     if (!names.includes(name)) onCreate?.(name);
@@ -56,23 +56,30 @@ export default function RecipeTagPicker({
         })}
         {names.length === 0 && <p className="text-xs text-stone-400">עדיין אין תגיות - הוסיפו את הראשונה למטה.</p>}
       </div>
-      <form onSubmit={handleCreate} className="flex gap-1.5">
+      <div className="flex gap-1.5">
         <input
           type="text"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault(); // don't submit the surrounding recipe form
+              handleCreate();
+            }
+          }}
           placeholder="תגית חדשה (למשל: ארוחת שישי)..."
           className="min-w-0 flex-1 rounded-lg border border-dashed border-stone-300 bg-transparent px-2.5 py-1.5 text-xs text-stone-700 outline-none focus:border-amber-400 dark:border-stone-700 dark:text-stone-200"
         />
         <button
-          type="submit"
+          type="button"
+          onClick={handleCreate}
           disabled={!draft.trim()}
           aria-label="הוספת תגית"
           className="shrink-0 rounded-lg border border-dashed border-stone-300 px-2 text-stone-500 hover:bg-stone-50 disabled:opacity-40 dark:border-stone-700 dark:hover:bg-stone-800"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
-      </form>
+      </div>
     </div>
   );
 }

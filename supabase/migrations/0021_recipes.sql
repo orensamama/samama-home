@@ -23,8 +23,16 @@ create table if not exists public.recipes (
   updated_at timestamptz not null default now()
 );
 
-create index if not exists recipes_categories_gin on public.recipes using gin (categories);
-create index if not exists recipes_created_at_idx on public.recipes (created_at desc);
+-- Indexes are best-effort: on a table that pre-dates this migration the columns may
+-- not exist yet (migration 0023 adds them); an index must never abort the script.
+do $$
+begin
+  create index if not exists recipes_categories_gin on public.recipes using gin (categories);
+  create index if not exists recipes_created_at_idx on public.recipes (created_at desc);
+exception when others then
+  raise notice 'recipes indexes skipped: %', sqlerrm;
+end
+$$;
 
 create table if not exists public.recipe_tags (
   id uuid primary key default gen_random_uuid(),
