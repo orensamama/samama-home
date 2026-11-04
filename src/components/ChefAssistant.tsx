@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ChefHat, Send, X } from "lucide-react";
+import { chefSuggestions } from "@/lib/chefSuggestions";
 import type { Recipe } from "@/lib/recipeData";
 
 type Turn = { role: "user" | "assistant"; content: string };
 
-const SUGGESTIONS = ["מה אפשר לשים במקום כמון?", "איך להכין את זה בנינג'ה / איר פרייר?", "איך להפוך את המתכון לפרווה?", "איך אפשר להקטין את הכמות לשניים?"];
 
 const ERROR_TEXT: Record<string, string> = {
   no_key: "העוזר עדיין לא הופעל: צריך להגדיר GEMINI_API_KEY בהגדרות הפרויקט ב-Vercel (Settings ← Environment Variables) ולפרוס מחדש. מפתח חינמי: aistudio.google.com/apikey",
@@ -23,6 +23,8 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  // Quick questions made from this recipe's own ingredients (no "make it parve" for a meat dish).
+  const suggestions = useMemo(() => chefSuggestions(recipe), [recipe]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -51,9 +53,11 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
           messages: next,
         }),
       });
-      const data = (await response.json().catch(() => ({}))) as { answer?: string; error?: string };
+      const data = (await response.json().catch(() => ({}))) as { answer?: string; error?: string; detail?: string };
       if (!response.ok || !data.answer) {
-        setError(ERROR_TEXT[data.error ?? ""] ?? "לא הצלחנו לקבל תשובה מהשף. נסו שוב.");
+        const base = ERROR_TEXT[data.error ?? ""] ?? "לא הצלחנו לקבל תשובה מהשף. נסו שוב.";
+        // The server's own words about what went wrong (never contains the key) -- so a failure can be diagnosed.
+        setError(data.detail ? `${base}\n\nפרטים: ${data.detail}` : base);
       } else {
         setTurns([...next, { role: "assistant", content: data.answer }]);
       }
@@ -101,7 +105,7 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
               {turns.length === 0 && (
                 <div className="flex flex-col gap-2">
                   <p className="text-sm text-stone-600 dark:text-stone-300">שאלו כל דבר על המתכון הזה - תחליפים, כלי בישול אחרים, התאמות:</p>
-                  {SUGGESTIONS.map((suggestion) => (
+                  {suggestions.map((suggestion) => (
                     <button
                       key={suggestion}
                       type="button"
@@ -127,7 +131,7 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
                 </div>
               ))}
               {busy && <div className="self-end rounded-2xl bg-stone-100 px-3 py-2 text-sm text-stone-400 dark:bg-stone-800">השף חושב...</div>}
-              {error && <p className="rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{error}</p>}
+              {error && <p className="whitespace-pre-wrap break-words rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{error}</p>}
               <div ref={endRef} />
             </div>
 
@@ -137,7 +141,7 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 maxLength={500}
-                placeholder="מה לשים במקום כמון?"
+                placeholder={suggestions[0] ?? "שאלו את השף על המתכון..."}
                 aria-label="שאלה לשף"
                 className="min-w-0 flex-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
               />

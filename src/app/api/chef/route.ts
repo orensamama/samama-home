@@ -1,4 +1,5 @@
-import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { rankFlashModels, type ListedModel } from "@/lib/geminiModels";
 
 // "Ask the Chef": answers questions about ONE recipe (substitutions, other appliances,
 // making it dairy-free...) with Google Gemini (free tier). The API key stays on the server
@@ -16,10 +17,45 @@ const MAX_RECIPE_CHARS = 8000;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 
-// The model asked for is tried first. Google retires old model names (1.5 is gone from
-// most accounts), so if it isn't found the next current Flash model is used instead.
-const REQUESTED_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
-const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+// Google retires model names (1.5 and 2.0 Flash are gone from many accounts), so the model is
+// not hard-coded: GEMINI_MODEL (if set) is tried first, then the newest Flash models this key
+// can actually use (asked from the API once an hour), then a few well-known names.
+const STATIC_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite"];
+const MODEL_LIST_TTL_MS = 60 * 60 * 1000;
+const MAX_MODEL_ATTEMPTS = 5;
+
+let modelCache: { at: number; ids: string[] } | null = null;
+
+async function listUsableModels(apiKey: string): Promise<string[]> {
+  if (modelCache && Date.now() - modelCache.at < MODEL_LIST_TTL_MS) return modelCache.ids;
+  try {
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {
+      headers: { "x-goog-api-key": apiKey },
+    });
+    if (!response.ok) throw new Error(`ListModels ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    const data = (await response.json()) as { models?: ListedModel[] };
+    const ids = rankFlashModels(data.models ?? []);
+    modelCache = { at: Date.now(), ids };
+    console.log("[chef] usable Gemini flash models:", ids.join(", ") || "(none listed)");
+    return ids;
+  } catch (error) {
+    console.error("[chef] could not list Gemini models:", error);
+    return [];
+  }
+}
+
+/** HTTP status of a Gemini SDK error ("[404 Not Found] ..." when the status field isn't set). */
+function statusOf(error: unknown): number | undefined {
+  const direct = (error as { status?: unknown } | null)?.status;
+  if (typeof direct === "number") return direct;
+  const match = String((error as Error | null)?.message ?? "").match(/\[(\d{3})\s/);
+  return match ? Number(match[1]) : undefined;
+}
+
+/** The key itself is the problem: no other model will do better. */
+function isKeyProblem(status: number | undefined, message: string): boolean {
+  return status === 401 || status === 403 || (status === 400 && /API key|API_KEY/i.test(message));
+}
 
 const hits = new Map<string, number[]>();
 
@@ -99,13 +135,18 @@ export async function POST(request: Request) {
 ${recipeContext(body.recipe)}`;
   const genAI = new GoogleGenerativeAI(apiKey);
 
-  let lastError: unknown = null;
-  for (const modelName of Array.from(new Set([REQUESTED_MODEL, ...FALLBACK_MODELS]))) {
+  const candidates = Array.from(
+    new Set([...(process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL] : []), ...(await listUsableModels(apiKey)).slice(0, 4), ...STATIC_MODELS])
+  ).slice(0, MAX_MODEL_ATTEMPTS);
+
+  const attempts: { model: string; status?: number; message: string }[] = [];
+  for (const modelName of candidates) {
     try {
       const model = genAI.getGenerativeModel({
         model: modelName,
         systemInstruction,
-        generationConfig: { maxOutputTokens: 900, temperature: 0.6 },
+        // Newer Gemini models "think" before answering and that counts against this limit: leave room.
+        generationConfig: { maxOutputTokens: 4096, temperature: 0.6 },
       });
       const result = await model.generateContent({ contents });
       const blocked = result.response.promptFeedback?.blockReason;
@@ -116,19 +157,27 @@ ${recipeContext(body.recipe)}`;
       } catch {
         // a response cut off by a safety filter has no text
       }
-      return Response.json({ answer: answer || "לא הצלחתי לנסח תשובה. נסו לשאול שוב." });
+      if (!answer) {
+        attempts.push({ model: modelName, message: `empty answer (finishReason: ${result.response.candidates?.[0]?.finishReason ?? "unknown"})` });
+        continue; // try the next model rather than answering with nothing
+      }
+      return Response.json({ answer });
     } catch (error) {
-      lastError = error;
-      console.error(`[chef] Gemini error (${modelName}):`, error);
-      // Model not found / not supported for this API version: try the next one. Anything else is final.
-      const status = error instanceof GoogleGenerativeAIFetchError ? error.status : undefined;
-      if (status !== 404) break;
+      const status = statusOf(error);
+      const message = String((error as Error | null)?.message ?? error).slice(0, 400);
+      attempts.push({ model: modelName, status, message });
+      console.log(error);
+      console.error(`[chef] Gemini request failed (model ${modelName}, status ${status ?? "none"}):`, message);
+      // A bad key or an exhausted quota-free account won't improve with another model; anything else might
+      // (model retired -> 404, model busy -> 503, model-specific limit -> 429), so try the next one.
+      if (isKeyProblem(status, message)) break;
     }
   }
 
-  const status = lastError instanceof GoogleGenerativeAIFetchError ? lastError.status : undefined;
-  if (status === 400 && /API key/i.test(String((lastError as Error).message))) return Response.json({ error: "bad_key" }, { status: 502 });
-  if (status === 401 || status === 403) return Response.json({ error: "bad_key" }, { status: 502 });
-  if (status === 429) return Response.json({ error: "busy" }, { status: 429 });
-  return Response.json({ error: "failed" }, { status: 502 });
+  const last = attempts[attempts.length - 1];
+  console.error("[chef] all attempts failed:", JSON.stringify(attempts));
+  const detail = `${last?.model ?? "?"}: ${last?.status ? `[${last.status}] ` : ""}${last?.message ?? ""}`.slice(0, 400);
+  if (last && isKeyProblem(last.status, last.message)) return Response.json({ error: "bad_key", detail }, { status: 502 });
+  if (attempts.length > 0 && attempts.every((attempt) => attempt.status === 429)) return Response.json({ error: "busy", detail }, { status: 429 });
+  return Response.json({ error: "failed", detail, tried: attempts.map((attempt) => attempt.model) }, { status: 502 });
 }
