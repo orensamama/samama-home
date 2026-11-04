@@ -35,22 +35,6 @@ export type RecipeDraft = Omit<Recipe, "id" | "created_at" | "updated_at" | "is_
 export const RECIPE_ORDER = { column: "created_at", ascending: false } as const;
 export const TAG_ORDER = { column: "sort_order", ascending: true } as const;
 
-export const SUGGESTED_TAGS = [
-  "בשרים",
-  "עוף",
-  "דגים",
-  "מרקים",
-  "סלטים",
-  "תוספות",
-  "מאפים ולחמים",
-  "עוגות וקינוחים",
-  "ארוחת שישי",
-  "חגים",
-  "מהיר ופשוט",
-  "ילדים",
-  "צמחוני",
-  "ללא גלוטן",
-];
 
 export function emptyDraft(): RecipeDraft {
   return {
@@ -97,29 +81,30 @@ function parseQuantity(match: RegExpMatchArray): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-/** 1.5 -> "1½", 0.25 -> "¼", 2 -> "2", 2.37 -> "2.4". */
+/**
+ * A simple, readable amount: whole numbers from 10 up, halves from 1 to 10 ("1.5",
+ * "2", "2.5"), and a single fraction glyph below 1 ("¼", "½", "¾"). A glyph is never
+ * placed next to digits: in a right-to-left line "42¾" is drawn as "¾42".
+ */
 export function formatQuantity(value: number): string {
-  if (value <= 0) return "0";
+  if (!(value > 0)) return "0";
   if (value >= 10) return String(Math.round(value)); // grams, ml...: whole numbers read best
-  const whole = Math.floor(value + 1e-9);
-  const rest = value - whole;
-  // The nearest kitchen fraction, if one is close enough; otherwise one decimal.
+  if (value >= 1) {
+    const halves = Math.round(value * 2) / 2;
+    return String(halves);
+  }
   const steps: [number, string][] = [
-    [0, ""],
     [0.25, "¼"],
     [1 / 3, "⅓"],
     [0.5, "½"],
     [2 / 3, "⅔"],
     [0.75, "¾"],
-    [1, ""],
+    [1, "1"],
   ];
   let best = steps[0];
-  for (const step of steps) if (Math.abs(rest - step[0]) < Math.abs(rest - best[0])) best = step;
-  if (Math.abs(rest - best[0]) <= 0.07) {
-    const base = best[0] === 1 ? whole + 1 : whole;
-    return best[1] === "" ? String(base) : `${base > 0 ? base : ""}${best[1]}`;
-  }
-  return String(Math.round(value * 10) / 10);
+  for (const step of steps) if (Math.abs(value - step[0]) < Math.abs(value - best[0])) best = step;
+  // Smaller than a quarter: a decimal is clearer than a made-up fraction.
+  return Math.abs(value - best[0]) <= 0.07 ? best[1] : String(Math.round(value * 10) / 10);
 }
 
 // "כוס וחצי", "כף ורבע": a unit plus a spoken fraction -- we can't rewrite those safely.
@@ -161,17 +146,27 @@ export function scaleIngredientLine(line: string, factor: number): { text: strin
 // ---------------------------------------------------------------------------
 
 export type ParsedRecipeText = {
+  /** The dish name only: no view counts, creator names, hashtags or caption text. */
   title: string;
   ingredients: string[];
   instructions: string;
   tips: string;
+  /** Text before the first heading beyond the title (a caption, a story): kept as notes. */
+  intro: string;
   servings: number | null;
   /** True when explicit headings (מצרכים / אופן הכנה ...) were found. */
   confident: boolean;
 };
 
 const INVISIBLE = /[‎‏‪-‮⁦-⁩﻿]/g;
+const EMOJI = /[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu;
+const EMOJI_ONE = /[\p{Extended_Pictographic}]/u;
 const HEADING_DECOR = /^[\s*_~#>\-–—:•·]+|[\s*_~:\-–—]+$/g;
+
+/** Removes emojis (🛒 ⏱️ 🍗 ...) and tidies the spaces they leave behind. */
+export function stripEmoji(value: string): string {
+  return value.replace(EMOJI, "").replace(/[ \t]{2,}/g, " ").trim();
+}
 
 const INGREDIENTS_HEADING = /^(המצרכים|מצרכים|המרכיבים|מרכיבים|הרכיבים|רכיבים|החומרים|חומרים|ingredients)(?=$|[\s:])/i;
 const PREPARATION_HEADING =
@@ -181,6 +176,13 @@ const TIPS_HEADING = /^(טיפים|טיפ|הערות|הערה|דגשים|חשו�
 // A line that opens with a quantity or a measuring word -- looks like an ingredient.
 const QUANTITY_LINE =
   /^[\s\-•*·–—]*(?:\d|[½¼¾⅓⅔⅛]|חצי\b|רבע\b|שליש\b|כוס|כוסות|כף|כפות|כפית|כפיות|קורט|קילו|גרם|חבילה|שן\b|שיני|מעט|קצת|ליטר|מ"ל|מ״ל|פרוסות|יחידה|יחידות)/;
+
+const MEASURE_WORD =
+  /(?:^|[\s(])(?:כפית|כפיות|כף|כפות|כוס|כוסות|גרם|גר'|קילו|ק"ג|ק״ג|ליטר|מ"ל|מ״ל|חבילה|חבילות|יחידה|יחידות|שן|שיני|קורט|חופן|פרוסה|פרוסות|קופסה|קופסת|שקית|צנצנת)(?=$|[\s,.)])/u;
+
+// Cooking actions (imperative / present plural): a line with one of these is a step, not an ingredient.
+const COOKING_VERB =
+  /(?:^|[\s(])(?:מחממ|מערבב|מוסיפ|אופ(?:ים|ה|ו|ות)\b|מטגנ|מבשל|חותכ|קוצצ|מניח|מכס(?:ים|ה)|מוציא|מקפל|שופכ|מסנ|מגיש|מתבל|מורח|מעביר|מכניס|מקציפ|ממתינ|מרתיח|מצנן|מקרר|ממלא|מפזר|מועך|מגלגל|הופכ|מצפ|מחבר|מערב(?:ל|ים)|הוסיפו|ערבבו|בשלו|חממו|אפו|טגנו|חתכו|קצצו|הניחו|כסו|הוציאו|קפלו|שפכו|הגישו|תבלו|מרחו|העבירו|הכניסו|הקציפו|חכו|המתינו|צננו|קררו|מלאו|פזרו|סננו|מעכו|גלגלו|הפכו|לשו|לשים|ללוש)|(?:דקות|תנור|על אש|לאחר מכן|בשלב הבא)/u;
 
 const SERVINGS_PATTERNS: RegExp[] = [
   /(?:(?<![\p{L}])ל|עבור\s|כמות[:\s]+|מנות[:\s]+)[-\s]?(\d{1,2})(?!\d)\s*(?:מנות|סועדים|אנשים|יחידות|עוגיות|פרוסות)/u,
@@ -197,9 +199,34 @@ function stripListMarker(line: string): string {
   return line.replace(/^[\s\-•*·–—]+/, "").replace(/^\d{1,2}[.)]\s+/, "").trim();
 }
 
-function headingOf(line: string): { type: "ingredients" | "preparation" | "tips"; rest: string } | null {
-  const bare = line.replace(HEADING_DECOR, "");
-  const candidates: [RegExp, "ingredients" | "preparation" | "tips"][] = [
+const isNumberedStep = (line: string) => /^\s*(?:שלב\s*)?\d{1,2}\s*[.):]\s+\S/.test(stripEmoji(line)) || /^\s*שלב\s*\d/.test(line);
+const hasBullet = (line: string) => /^\s*[-•*·–—▪●◦✔✓]/.test(line) || /^\s*[\p{Extended_Pictographic}]/u.test(line);
+
+/** A bullet / quantity / measure line with no cooking action: an ingredient, whichever section it was under. */
+function isStrictIngredient(line: string): boolean {
+  const text = stripEmoji(line);
+  if (!text || text.length > 70 || isNumberedStep(line) || COOKING_VERB.test(text)) return false;
+  if (/:\s*$/.test(text)) return false; // a sub-heading
+  return hasBullet(line) || QUANTITY_LINE.test(text) || MEASURE_WORD.test(text);
+}
+
+/** A numbered or action line: instructions, even if it was written under the ingredients. */
+function isStepLike(line: string): boolean {
+  const text = stripEmoji(line);
+  if (isNumberedStep(line) && (COOKING_VERB.test(text) || text.length > 40)) return true;
+  return COOKING_VERB.test(text) && text.split(/\s+/).length >= 5 && !QUANTITY_LINE.test(text);
+}
+
+function tidyLine(line: string): string {
+  return stripEmoji(line).replace(/^\s*[-•*·–—▪●◦✔✓]+\s*/, "").trim();
+}
+
+type HeadingInfo = { type: "ingredients" | "preparation" | "tips"; rest: string };
+
+function headingOf(line: string): HeadingInfo | null {
+  const plain = stripEmoji(line).trim();
+  const bare = plain.replace(HEADING_DECOR, "");
+  const candidates: [RegExp, HeadingInfo["type"]][] = [
     [INGREDIENTS_HEADING, "ingredients"],
     [PREPARATION_HEADING, "preparation"],
     [TIPS_HEADING, "tips"],
@@ -210,8 +237,12 @@ function headingOf(line: string): { type: "ingredients" | "preparation" | "tips"
     // A heading is short, or has a colon right after the keyword; a long sentence that
     // merely starts with "הכנה ..." is not one.
     const remainder = bare.slice(match[0].length).replace(/^[\s:：\-–—*_]+/, "");
-    const hasColon = /^[\s*_]*:/.test(bare.slice(match[0].length)) || /:\s*[*_]*$/.test(line.trim());
-    if (remainder === "" || hasColon) return { type, rest: remainder };
+    const colonAfterKeyword = /^[\s*_]*:/.test(bare.slice(match[0].length));
+    const trailingColon = /:\s*[*_]*$/.test(plain);
+    if (remainder === "") return { type, rest: "" };
+    if (colonAfterKeyword) return { type, rest: remainder };
+    // "מצרכים לרוטב:" -- a sub-heading: keep its label (as "לרוטב:") inside the section.
+    if (trailingColon && remainder.length <= 30 && !/\d/.test(remainder)) return { type, rest: `${remainder.replace(/:\s*$/, "")}:` };
   }
   return null;
 }
@@ -227,6 +258,35 @@ export function parseServings(text: string): number | null {
   return null;
 }
 
+/**
+ * Moves each line to the section it belongs in, whichever heading it was under:
+ * bullet/quantity/measure lines without a cooking action are ingredients; numbered
+ * or action lines are instructions.
+ */
+function redistribute(ingredientLines: string[], prepLines: string[]): { ingredients: string[]; prep: string[] } {
+  const ingredients: string[] = [];
+  const movedToPrep: string[] = [];
+  for (const line of ingredientLines) {
+    if (!line.trim()) continue;
+    if (isStepLike(line)) movedToPrep.push(line);
+    else ingredients.push(line);
+  }
+  const prep: string[] = [...movedToPrep];
+  for (const line of prepLines) {
+    if (line.trim() && isStrictIngredient(line)) ingredients.push(line);
+    else prep.push(line);
+  }
+  return { ingredients, prep };
+}
+
+function joinText(lines: string[]): string {
+  return lines
+    .map((line) => stripEmoji(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function parseRecipeText(rawText: string): ParsedRecipeText {
   const lines = rawText.split(/\r?\n/).map(cleanLine);
   let section: "pre" | "ingredients" | "preparation" | "tips" = "pre";
@@ -239,7 +299,9 @@ export function parseRecipeText(rawText: string): ParsedRecipeText {
       if (section === "preparation" || section === "tips") buckets[section].push("");
       continue;
     }
-    const heading = headingOf(line.trim());
+    // A line that was only emojis / decoration carries nothing.
+    if (!stripEmoji(line).replace(/[*_~\-–—•·\s]/g, "")) continue;
+    const heading = headingOf(line);
     if (heading) {
       sawHeading = true;
       section = heading.type;
@@ -250,34 +312,39 @@ export function parseRecipeText(rawText: string): ParsedRecipeText {
     else buckets[section].push(line);
   }
 
+  // Title: the dish name from the first line; whatever else that line carried goes to the notes.
   let title = "";
+  const introParts: string[] = [];
   let preLines = pre.filter((line) => line.trim());
-  // First meaningful line is the title (unless it's a link or very long).
-  if (preLines.length > 0 && !/^https?:\/\//i.test(preLines[0].trim()) && preLines[0].trim().length <= 90) {
-    title = preLines[0].replace(HEADING_DECOR, "").trim();
+  if (preLines.length > 0 && !/^https?:\/\//i.test(preLines[0].trim()) && !isStrictIngredient(preLines[0])) {
+    const split = splitTitle(preLines[0]);
+    title = split.title;
+    if (split.extra) introParts.push(split.extra);
     preLines = preLines.slice(1);
   }
 
-  let ingredients = buckets.ingredients.map(stripListMarker).filter(Boolean);
-  let instructions = buckets.preparation.join("\n").trim();
-  const tips = buckets.tips.join("\n").trim();
+  let ingredientLines = buckets.ingredients;
+  let prepLines = buckets.preparation;
+  const tipLines = buckets.tips;
 
-  if (!sawHeading || (ingredients.length === 0 && instructions === "")) {
-    // No headings: look for a run of quantity-looking lines (the ingredients), the rest is the method.
-    const rest = preLines.length > 0 ? preLines : lines.filter((line) => line.trim());
-    const body = title && preLines.length === 0 ? rest.slice(1) : rest;
-    const isIngredient = body.map((line) => line.length <= 80 && QUANTITY_LINE.test(line));
-    const count = isIngredient.filter(Boolean).length;
-    if (count >= 3 && count / Math.max(body.length, 1) >= 0.4) {
-      ingredients = body.filter((_, index) => isIngredient[index]).map(stripListMarker);
-      instructions = body.filter((_, index) => !isIngredient[index]).join("\n").trim();
+  if (!sawHeading) {
+    // No headings: bullet / quantity lines are the ingredients, the rest is the method.
+    const body = preLines;
+    const flags = body.map((line) => isStrictIngredient(line));
+    const count = flags.filter(Boolean).length;
+    if (count >= 2) {
+      ingredientLines = body.filter((_, index) => flags[index]);
+      prepLines = body.filter((_, index) => !flags[index]);
     } else {
-      instructions = body.join("\n").trim();
+      prepLines = body;
     }
-  } else if (preLines.length > 0 && instructions === "") {
-    instructions = preLines.join("\n").trim();
+    preLines = [];
+  } else if (preLines.length > 0) {
+    introParts.push(...preLines);
   }
 
+  const split = redistribute(ingredientLines, prepLines);
+  let ingredients = split.ingredients.map(tidyLine).map(stripListMarker).filter(Boolean);
   // A single "ביצים, קמח, סוכר" line is several ingredients written inline.
   if (ingredients.length === 1 && (ingredients[0].match(/,/g) ?? []).length >= 2) {
     ingredients = ingredients[0].split(",").map((part) => part.trim()).filter(Boolean);
@@ -286,11 +353,321 @@ export function parseRecipeText(rawText: string): ParsedRecipeText {
   return {
     title,
     ingredients,
-    instructions,
-    tips,
+    instructions: joinText(split.prep),
+    tips: joinText(tipLines),
+    intro: joinText(introParts),
     servings: parseServings(rawText),
     confident: sawHeading && ingredients.length > 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Titles: the dish name only
+// ---------------------------------------------------------------------------
+
+// "291K views", "4.7K reactions", "1,234 likes", "291K צפיות", "4.7K רגשות" ...
+const METRIC =
+  /[\d.,]+\s?[KkMm]?\+?\s*(?:views?|likes?|comments?|reactions?|shares?|plays?|followers?|צפיות|צפייה|צפיה|לייקים|לייק|תגובות|רגשות|שיתופים|אהבו|עוקבים)(?![\p{L}])|(?<![\p{L}])(?:views?|likes?|צפיות|לייקים|תגובות|רגשות)\s*[:·]?\s*[\d.,]+\s?[KkMm]?/giu;
+
+const PLATFORM_ONLY = /^(?:instagram|facebook|tiktok|youtube|threads|reels?|fb|ig|watch)$/i;
+const TITLE_MAX = 60;
+
+function isMetricSegment(segment: string): boolean {
+  const bare = segment.replace(METRIC, "").replace(/[\s·|,.\-–—]/g, "");
+  return bare === "" || /^[\d.,KkMm]+$/.test(bare);
+}
+
+// A creator handle / name: Latin letters only ("Rubi Michael", "Itay Edri"), or @handle.
+function isCreatorSegment(segment: string): boolean {
+  const text = segment.trim();
+  if (/^@/.test(text)) return true;
+  return /^[A-Za-z][A-Za-z0-9 ._'-]{1,40}$/.test(text) && !/\p{Script=Hebrew}/u.test(text);
+}
+
+/**
+ * Pulls the dish name out of whatever a post / page / caption put in the title:
+ * drops view and reaction counts, creator names, platform names, hashtags,
+ * mentions, links and emojis, and keeps the first short phrase. `extra` is the
+ * original text when it differs, so nothing is lost -- it belongs in the notes.
+ */
+export function splitTitle(raw: string): { title: string; extra: string } {
+  const original = raw.replace(INVISIBLE, "").trim();
+  let text = original;
+
+  // 'Rubi Michael on Instagram: "caption..."' -> the caption.
+  const quoted = text.match(/^.{0,80}?\s+on\s+(?:Instagram|Facebook|TikTok|YouTube|Threads)\s*[:\-–]\s*[“"'׳]?([\s\S]*)$/i);
+  if (quoted) text = quoted[1];
+  // '291K likes, 12 comments - user on March 3, 2024: "caption"'
+  const metricsThenQuote = text.match(/^[\d.,KkMm]+\s*(?:likes?|views?|comments?)[^:"“]{0,80}[:\-–]\s*[“"']?([\s\S]*)$/i);
+  if (metricsThenQuote) text = metricsThenQuote[1];
+  text = text.replace(/[“”"]+\s*$/, "");
+
+  // "a | b · c - d": keep the first segment that is neither a count, a platform nor a creator.
+  const segments = text
+    .split(/\s*[|·•]\s*|\s+[-–—]\s+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const candidates = segments.filter(
+    (segment) => !isMetricSegment(segment) && !PLATFORM_ONLY.test(segment) && !isCreatorSegment(segment)
+  );
+  const picked = candidates.find((segment) => /\p{Script=Hebrew}/u.test(segment)) ?? candidates[0] ?? segments[0] ?? text;
+  text = picked;
+
+  // A caption uses an emoji as its separator: the dish name is what comes before it.
+  const beforeEmoji = text.split(EMOJI_ONE)[0].trim();
+  if (beforeEmoji.length >= 3) text = beforeEmoji;
+
+  text = stripEmoji(text)
+    .replace(METRIC, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/[#@]\S+/g, " ")
+    .split(/\r?\n/)[0]
+    .replace(/^\s*מתכון\s*(?:ל|של\s|ל-)\s*/u, "")
+    .replace(/^\s*מתכון\s*[:\-–]\s*/u, "")
+    .trim();
+
+  // First phrase only: up to a sentence end or a colon.
+  const stop = text.search(/[.!?…](?:\s|$)|:\s/);
+  if (stop >= 3) text = text.slice(0, stop);
+  text = text
+    .replace(/\s+(?:מצרכים|המצרכים|מרכיבים|אופן הכנה|הכנה|המתכון|מתכון)\s*$/u, "")
+    .replace(/^[\s"'“”,.:;\-–—*#]+|[\s"'“”,.:;\-–—*#]+$/g, "")
+    .replace(/\s{2,}/g, " ");
+
+  if (text.length > TITLE_MAX) {
+    const cut = text.slice(0, TITLE_MAX);
+    text = cut.slice(0, Math.max(cut.lastIndexOf(" "), 20)).trim();
+  }
+  const title = text || stripEmoji(original).slice(0, TITLE_MAX).trim();
+  return { title, extra: normalizeText(title) === normalizeText(original) ? "" : original };
+}
+
+export function cleanTitle(raw: string): string {
+  return splitTitle(raw).title;
+}
+
+/** Instagram/Facebook descriptions arrive as '291K likes, 5 comments - user on <date>: "caption"': keep the caption. */
+export function stripSocialPrefix(description: string): string {
+  const text = description.trim();
+  const match = text.match(/^[\d.,KkMm]+\s*(?:likes?|views?|comments?|reactions?)[^:"“]{0,120}:\s*[“"']?([\s\S]*)$/i);
+  const body = match ? match[1] : text;
+  return body.replace(/[“”"]+\s*\.?\s*$/, "").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Categories by keyword
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_CATEGORIES: { name: string; emoji: string; keywords: string[] }[] = [
+  { name: "בשרים ועופות", emoji: "🥩", keywords: ["בשר", "עוף", "פרגית", "פרגיות", "שניצל", "קציצ", "קבב", "סטייק", "אנטריקוט", "כבד", "המבורגר", "שווארמה", "צלי", "כתף", "בקר", "הודו", "נקניקיות", "חזה עוף", "כרעיים", "שוק", "טחון", "אסאדו", "אסאדו", "בשרי", "צלעות", "ריבס"] },
+  { name: "דגים", emoji: "🐟", keywords: ["דג", "דגים", "סלמון", "טונה", "דניס", "לברק", "אמנון", "בורי", "סרדין", "מוסר", "טילאפיה", "גפילטע", "פילה דג", "שרימפס", "קלמרי"] },
+  { name: "מרקים", emoji: "🍲", keywords: ["מרק", "קובה", "שורבה", "מרקים", "לחשו"] },
+  { name: "סלטים", emoji: "🥗", keywords: ["סלט", "סלטים", "טחינה", "חומוס", "מטבוחה", "כרוב", "חציל", "סלסה", "גוואקמולי", "טאבולה", "קולסלו"] },
+  { name: "פסטות ואורז", emoji: "🍝", keywords: ["פסטה", "ספגטי", "מקרוני", "לזניה", "ניוקי", "פנה", "אורז", "ריזוטו", "קוסקוס", "נודלס", "פתיתים", "תבשיל"] },
+  { name: "מאפים ולחמים", emoji: "🥐", keywords: ["לחם", "חלה", "פיצה", "בורקס", "בצק", "לחמניות", "פוקאצ", "פיתה", "לחמניה", "מאפה", "קרואסון", "טורטייה", "בייגל", "שקשוקה בפיתה"] },
+  { name: "קינוחים ועוגות", emoji: "🍰", keywords: ["עוגה", "עוגת", "עוגיות", "עוגיה", "קינוח", "מוס", "גלידה", "פאי", "טירמיסו", "בראוניז", "קרמבו", "פנקייק", "סופגניות", "ממתק", "שוקולד", "קראמבל", "מתוק", "קרפ", "וופל", "צ'יזקייק", "מלבי"] },
+  { name: "ארוחת בוקר", emoji: "🍳", keywords: ["שקשוקה", "חביתה", "אומלט", "גבינה", "פשטידה", "מצקצקת", "פנקייק", "גרנולה", "טוסט", "שקשוקה"] },
+  { name: "צמחוני וטבעוני", emoji: "🥦", keywords: ["צמחוני", "טבעוני", "טופו", "קטניות", "עדשים", "חומוס", "פלאפל", "ירקות", "קציצות ירק"] },
+  { name: "ארוחת שישי", emoji: "🍷", keywords: ["חמין", "קוגל", "גפילטע", "כרעיים", "שישי", "שבת", "צלי", "כבד קצוץ"] },
+];
+
+/** The family's own tags beyond the built-in categories. */
+const EXTRA_SUGGESTED = ["חגים", "מהיר ופשוט", "ילדים", "ללא גלוטן"];
+export const SUGGESTED_TAGS = [...DEFAULT_CATEGORIES.map((category) => category.name), ...EXTRA_SUGGESTED];
+
+const EXTRA_EMOJI: Record<string, string> = { חגים: "🕎", "מהיר ופשוט": "⚡", ילדים: "🧒", "ללא גלוטן": "🌾" };
+const TAG_PALETTE = [
+  "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/30 dark:text-rose-300 dark:border-rose-900/50",
+  "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/30 dark:text-sky-300 dark:border-sky-900/50",
+  "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950/30 dark:text-orange-300 dark:border-orange-900/50",
+  "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-900/50",
+  "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-900/50",
+  "bg-pink-50 text-pink-700 border-pink-200 dark:bg-pink-950/30 dark:text-pink-300 dark:border-pink-900/50",
+  "bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950/30 dark:text-violet-300 dark:border-violet-900/50",
+  "bg-lime-50 text-lime-800 border-lime-200 dark:bg-lime-950/30 dark:text-lime-300 dark:border-lime-900/50",
+  "bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-950/30 dark:text-teal-300 dark:border-teal-900/50",
+  "bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200 dark:bg-fuchsia-950/30 dark:text-fuchsia-300 dark:border-fuchsia-900/50",
+];
+
+/** A stable colour for a tag, so the same category looks the same everywhere. */
+export function tagColorClasses(name: string): string {
+  let hash = 0;
+  for (const char of name) hash = (hash * 31 + char.codePointAt(0)!) % 9973;
+  return TAG_PALETTE[hash % TAG_PALETTE.length];
+}
+
+/** An emoji for a tag: a built-in category's own, else guessed from its words, else a plate. */
+export function emojiForTag(name: string): string {
+  const exact = DEFAULT_CATEGORIES.find((category) => category.name === name);
+  if (exact) return exact.emoji;
+  if (EXTRA_EMOJI[name]) return EXTRA_EMOJI[name];
+  const guessed = suggestCategories({ title: name, ingredients: [] });
+  const found = DEFAULT_CATEGORIES.find((category) => category.name === guessed[0]);
+  return found?.emoji ?? "🍽️";
+}
+
+function hasKeyword(tokens: string[], text: string, keyword: string): boolean {
+  const needle = normalizeText(keyword);
+  if (needle.length >= 4) return text.includes(needle);
+  // Short words must match a whole word (allowing one attached prefix letter), so "דג" doesn't hit "דגנים".
+  return tokens.some((token) => token === needle || (token.length === needle.length + 1 && /^[בלמהוכש]/.test(token) && token.slice(1) === needle));
+}
+
+/**
+ * Categories a recipe belongs in, from its dish name first (one hit is enough) and
+ * its ingredients second (needs two). At most two, best first.
+ */
+export function suggestCategories(recipe: { title: string; ingredients: string[] }): string[] {
+  const titleText = normalizeText(recipe.title);
+  const titleTokens = titleText.split(" ").filter(Boolean);
+  const ingredientText = normalizeText(recipe.ingredients.slice(0, 14).join(" "));
+  const ingredientTokens = ingredientText.split(" ").filter(Boolean);
+
+  const scored = DEFAULT_CATEGORIES.map((category) => {
+    const titleHits = category.keywords.filter((keyword) => hasKeyword(titleTokens, titleText, keyword)).length;
+    const ingredientHits = category.keywords.filter((keyword) => hasKeyword(ingredientTokens, ingredientText, keyword)).length;
+    return { name: category.name, score: titleHits * 3 + (ingredientHits >= 2 ? ingredientHits : 0), titleHits };
+  }).filter((entry) => entry.titleHits > 0 || entry.score > 0);
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 2).map((entry) => entry.name);
+}
+
+// ---------------------------------------------------------------------------
+// Cleaning up recipes that are already saved
+// ---------------------------------------------------------------------------
+
+export type RepairResult = {
+  title: string;
+  ingredients: string[];
+  instructions: string;
+  tips: string;
+  description: string;
+  servings: number | null;
+  /** Nothing to change. */
+  unchanged: boolean;
+  titleChanged: boolean;
+  sectionsChanged: boolean;
+};
+
+/**
+ * Re-cleans one saved recipe: a clean dish-name title (the junk goes to the notes),
+ * headings and emojis out of the text, ingredient lines back among the ingredients and
+ * steps back among the instructions. Uses the original imported text when it still
+ * parses with headings; otherwise it re-sorts the fields as they are.
+ */
+export function repairRecipe(recipe: Pick<Recipe, "title" | "ingredients" | "instructions" | "tips" | "description" | "original_text" | "servings">): RepairResult {
+  const split = splitTitle(recipe.title || "");
+  let title = split.title;
+  let description = recipe.description;
+  if (split.extra && !normalizeText(description).includes(normalizeText(split.extra).slice(0, 60))) {
+    description = [split.extra, description].filter(Boolean).join("\n\n");
+  }
+
+  let ingredients: string[];
+  let instructions: string;
+  let tips = recipe.tips;
+  let servings = recipe.servings;
+
+  const original = recipe.original_text?.trim() ?? "";
+  const reparsed = original ? parseRecipeText(original) : null;
+  if (reparsed && reparsed.confident) {
+    ingredients = reparsed.ingredients;
+    instructions = reparsed.instructions;
+    tips = reparsed.tips || recipe.tips;
+    servings = servings ?? reparsed.servings;
+    // The original's own first line may be the real dish name when the saved one was junk.
+    if (!title && reparsed.title) title = reparsed.title;
+    if (reparsed.intro && !normalizeText(description).includes(normalizeText(reparsed.intro).slice(0, 60))) {
+      description = [description, reparsed.intro].filter(Boolean).join("\n\n");
+    }
+  } else {
+    const ingredientLines = recipe.ingredients.flatMap((line) => line.split("\n"));
+    const redistributed = redistribute(ingredientLines, recipe.instructions.split("\n"));
+    // Heading words that ended up inside the text fields are dropped.
+    const withoutHeadings = (lines: string[]) =>
+      lines.flatMap((line) => {
+        const heading = line.trim() ? headingOf(line) : null;
+        if (!heading) return [line];
+        return heading.rest ? [heading.rest] : [];
+      });
+    ingredients = withoutHeadings(redistributed.ingredients).map(tidyLine).map(stripListMarker).filter(Boolean);
+    instructions = joinText(withoutHeadings(redistributed.prep));
+    tips = joinText(withoutHeadings(tips.split("\n")));
+  }
+  if (!title) title = "מתכון ללא שם";
+
+  const titleChanged = title !== recipe.title;
+  const sectionsChanged =
+    ingredients.join("\n") !== recipe.ingredients.join("\n") || instructions !== recipe.instructions.trim() || tips !== recipe.tips;
+  return {
+    title,
+    ingredients,
+    instructions,
+    tips,
+    description,
+    servings,
+    unchanged: !titleChanged && !sectionsChanged && description === recipe.description,
+    titleChanged,
+    sectionsChanged,
+  };
+}
+
+/** Recipes that are the same dish written for different batch sizes: keep one, drop the rest. */
+export type QuantityDuplicateGroup = { keep: Recipe; remove: Recipe[] };
+
+function shapeOf(lines: string[]): Set<string> {
+  // The ingredient names without amounts or units: "500 גרם בשר טחון" and "1 קילו בשר טחון" look alike.
+  return new Set(
+    lines
+      .map((line) => normalizeText(line.replace(/[\d½¼¾⅓⅔⅛/.,]+/g, " ")).replace(/(?:^|\s)(?:כפית|כפיות|כף|כפות|כוס|כוסות|גרם|קילו|ק"ג|ליטר|יחידות|יחידה|חבילה|שיני|שן|מ"ל)(?=\s|$)/gu, " ").replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+  );
+}
+
+function magnitudeOf(lines: string[]): number {
+  let total = 0;
+  for (const line of lines) {
+    for (const match of line.matchAll(QUANTITY_TOKEN)) {
+      const value = parseQuantity(match as RegExpMatchArray);
+      if (value) {
+        total += value;
+        break; // first quantity of the line is its amount
+      }
+    }
+  }
+  return total;
+}
+
+export function planQuantityDuplicates(recipes: Recipe[]): QuantityDuplicateGroup[] {
+  const byTitle = new Map<string, Recipe[]>();
+  for (const recipe of recipes) {
+    const key = normalizeText(cleanTitle(recipe.title));
+    if (!key || recipe.ingredients.length < 2) continue;
+    byTitle.set(key, [...(byTitle.get(key) ?? []), recipe]);
+  }
+
+  const groups: QuantityDuplicateGroup[] = [];
+  for (const sameTitle of byTitle.values()) {
+    if (sameTitle.length < 2) continue;
+    // Within one title, cluster the recipes whose ingredient lists are the same apart from amounts.
+    const used = new Set<string>();
+    for (const first of sameTitle) {
+      if (used.has(first.id)) continue;
+      const shape = shapeOf(first.ingredients);
+      const cluster = sameTitle.filter((other) => {
+        if (used.has(other.id)) return false;
+        const otherShape = shapeOf(other.ingredients);
+        return other === first || jaccard(shape, otherShape) >= 0.9;
+      });
+      cluster.forEach((recipe) => used.add(recipe.id));
+      if (cluster.length < 2) continue;
+      // Keep the middle batch size (500g / 1kg / 1.5kg -> 1kg); on a tie, the newest (list order).
+      const ordered = [...cluster].sort((a, b) => magnitudeOf(a.ingredients) - magnitudeOf(b.ingredients));
+      const keep = ordered[Math.floor((ordered.length - 1) / 2)];
+      groups.push({ keep, remove: cluster.filter((recipe) => recipe !== keep) });
+    }
+  }
+  return groups;
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +846,7 @@ export function extractChatRecipes(raw: string): ChatRecipeCandidate[] {
         date: message.date,
         kind: "link",
         original: text,
-        parsed: { title: "", ingredients: [], instructions: "", tips: "", servings: null, confident: false },
+        parsed: { title: "", ingredients: [], instructions: "", tips: "", intro: "", servings: null, confident: false },
         url: link,
         needsReview: caption.length === 0,
       });
@@ -641,9 +1018,11 @@ export function draftFromText(text: string): RecipeDraft {
   return {
     ...emptyDraft(),
     title: parsed.title,
+    categories: suggestCategories({ title: parsed.title, ingredients: parsed.ingredients }),
     ingredients: parsed.ingredients,
     instructions: parsed.instructions,
     tips: parsed.tips,
+    description: parsed.intro,
     servings: parsed.servings,
     original_text: text.trim(),
   };

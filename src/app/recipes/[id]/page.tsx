@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowRight, ChefHat, Minus, Pencil, Plus, Star, Trash2, TriangleAlert, Users } from "lucide-react";
 import { SkeletonBlock } from "@/components/Skeleton";
+import ChefAssistant from "@/components/ChefAssistant";
 import RecipeForm from "@/components/RecipeForm";
 import VideoEmbed from "@/components/VideoEmbed";
 import { useRecipes } from "@/lib/useRecipes";
@@ -295,6 +296,8 @@ export default function RecipePage() {
           </p>
         )}
       </div>
+
+      <ChefAssistant recipe={recipe} />
 
       {editing && (
         <RecipeForm

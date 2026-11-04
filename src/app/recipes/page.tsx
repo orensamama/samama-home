@@ -2,11 +2,12 @@
 
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
-import { ChefHat, FileUp, Plus, Refrigerator, Search, Star, Tags, TriangleAlert, Video } from "lucide-react";
+import { ChefHat, FileUp, Plus, Refrigerator, Search, Sparkles, Star, Tags, TriangleAlert, Video } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import { SkeletonList } from "@/components/Skeleton";
 import SetupSqlButton from "@/components/SetupSqlButton";
 import RecipeAddModal from "@/components/RecipeAddModal";
+import RecipeCleanupPanel from "@/components/RecipeCleanupPanel";
 import RecipeForm from "@/components/RecipeForm";
 import RecipeImportPanel from "@/components/RecipeImportPanel";
 import RecipeTagManager from "@/components/RecipeTagManager";
@@ -15,16 +16,18 @@ import { addTag, deleteTag, insertRecipe, patchRecipe, renameTag } from "@/lib/r
 import { friendlyErrorMessage } from "@/lib/supabaseErrors";
 import {
   collectTags,
+  emojiForTag,
   emptyDraft,
   findDuplicate,
   mergeIntoExisting,
   replaceWithNewer,
   searchRecipes,
+  tagColorClasses,
   type DuplicateMatch,
   type RecipeDraft,
 } from "@/lib/recipeData";
 
-type Modal = "add" | "form" | "import" | "tags" | null;
+type Modal = "add" | "form" | "import" | "tags" | "cleanup" | null;
 
 export default function RecipesPage() {
   const { recipes, tags, loading, fetched, error, refetch, refetchTags } = useRecipes();
@@ -41,7 +44,13 @@ export default function RecipesPage() {
   const [dupPrompt, setDupPrompt] = useState<{ draft: RecipeDraft; match: DuplicateMatch } | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
 
-  const allTags = useMemo(() => collectTags(tags, recipes), [tags, recipes]);
+  // Tags added this session show up at once, even before (or without) the database confirming them.
+  const [extraTags, setExtraTags] = useState<string[]>([]);
+  const [tagError, setTagError] = useState<{ message: string; needsSql: boolean } | null>(null);
+  const allTags = useMemo(() => {
+    const base = collectTags(tags, recipes);
+    return [...base, ...extraTags.filter((name) => !base.includes(name))];
+  }, [tags, recipes, extraTags]);
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const recipe of recipes) for (const tag of recipe.categories) counts.set(tag, (counts.get(tag) ?? 0) + 1);
@@ -55,9 +64,21 @@ export default function RecipesPage() {
   const filtering = text.trim() !== "" || selectedTags.length > 0 || (haveMode && have.trim() !== "");
 
   const handleCreateTag = useCallback(
-    async (name: string) => {
-      const { error: tagError } = await addTag(name, tags.length + 1);
-      if (tagError && tagError.code !== "23505") setPageError(friendlyErrorMessage(tagError));
+    async (nameRaw: string) => {
+      const name = nameRaw.trim();
+      if (!name) return;
+      setTagError(null);
+      setExtraTags((current) => (current.includes(name) ? current : [...current, name]));
+      const { error: addError } = await addTag(name, tags.length + 1);
+      if (addError && addError.code !== "23505") {
+        const missingTable = addError.code === "42P01" || addError.code === "PGRST205";
+        setTagError({
+          message: missingTable
+            ? "התגית נוספה לשימוש כעת, אבל טבלת התגיות לא קיימת במסד הנתונים ולכן היא לא תישמר. הריצו פעם אחת את ה-SQL שמתחת."
+            : `התגית נוספה לשימוש כעת, אבל לא נשמרה במסד הנתונים: ${addError.message}`,
+          needsSql: missingTable,
+        });
+      }
       refetchTags();
     },
     [tags.length, refetchTags]
@@ -192,6 +213,16 @@ export default function RecipesPage() {
             <FileUp className="h-3.5 w-3.5" />
             ייבוא מוואטסאפ
           </button>
+          {recipes.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setModal("cleanup")}
+              className={`${chipBase} flex items-center gap-1 border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300`}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              ניקוי וארגון מחדש
+            </button>
+          )}
         </div>
 
         {haveMode && (
@@ -209,28 +240,32 @@ export default function RecipesPage() {
         )}
 
         {allTags.length > 0 && (
-          <div className="flex flex-wrap gap-1.5" role="group" aria-label="סינון לפי תגיות">
-            {allTags.map((tag) => {
-              const on = selectedTags.includes(tag);
-              return (
-                <button
-                  key={tag}
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => setSelectedTags((current) => (on ? current.filter((t) => t !== tag) : [...current, tag]))}
-                  className={`${chipBase} ${
-                    on
-                      ? "border-amber-500 bg-amber-500 text-white"
-                      : "border-amber-200 bg-white text-stone-600 hover:bg-amber-50 dark:border-amber-900/50 dark:bg-stone-900 dark:text-stone-300"
-                  }`}
-                >
-                  {tag} <span className="opacity-60">{tagCounts.get(tag) ?? 0}</span>
-                </button>
-              );
-            })}
+          <div>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4" role="group" aria-label="סינון לפי קטגוריות">
+              {allTags.map((tag) => {
+                const on = selectedTags.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => setSelectedTags((current) => (on ? current.filter((t) => t !== tag) : [...current, tag]))}
+                    className={`flex flex-col items-center gap-0.5 rounded-2xl border px-1.5 py-2.5 text-center transition-all active:scale-95 ${
+                      on ? "border-amber-500 bg-amber-500 text-white shadow-md" : `${tagColorClasses(tag)} hover:shadow-sm`
+                    }`}
+                  >
+                    <span className="text-2xl leading-none" aria-hidden="true">
+                      {emojiForTag(tag)}
+                    </span>
+                    <span className="line-clamp-2 text-[11px] font-semibold leading-tight">{tag}</span>
+                    <span className={`text-[10px] tabular-nums ${on ? "text-white/80" : "opacity-60"}`}>{tagCounts.get(tag) ?? 0}</span>
+                  </button>
+                );
+              })}
+            </div>
             {selectedTags.length > 0 && (
-              <button type="button" onClick={() => setSelectedTags([])} className="px-1 text-xs font-medium text-amber-600 hover:underline dark:text-amber-400">
-                נקה
+              <button type="button" onClick={() => setSelectedTags([])} className="mt-2 text-xs font-medium text-amber-600 hover:underline dark:text-amber-400">
+                נקה סינון ({selectedTags.length})
               </button>
             )}
           </div>
@@ -261,7 +296,7 @@ export default function RecipesPage() {
               <li key={recipe.id}>
                 <Link
                   href={`/recipes/${recipe.id}`}
-                  className="flex gap-3 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm transition-shadow hover:shadow-md dark:border-amber-950/30 dark:bg-stone-900"
+                  className="flex max-h-28 gap-3 overflow-hidden rounded-2xl border border-amber-100 bg-white p-3 shadow-sm transition-shadow hover:shadow-md dark:border-amber-950/30 dark:bg-stone-900"
                 >
                   <span className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-amber-50 dark:bg-amber-950/30">
                     {recipe.image_url ? (
@@ -273,14 +308,14 @@ export default function RecipesPage() {
                   </span>
                   <span className="flex min-w-0 flex-1 flex-col gap-1">
                     <span className="flex items-start gap-1.5">
-                      <span className="min-w-0 flex-1 text-sm font-bold text-stone-800 dark:text-stone-100">{recipe.title}</span>
+                      <span className="line-clamp-2 min-w-0 flex-1 text-sm font-bold leading-snug text-stone-800 dark:text-stone-100">{recipe.title}</span>
                       {recipe.is_favorite && <Star className="h-4 w-4 shrink-0 fill-amber-400 text-amber-500" />}
                     </span>
                     {recipe.categories.length > 0 && (
                       <span className="flex flex-wrap gap-1">
                         {recipe.categories.slice(0, 3).map((tag) => (
-                          <span key={tag} className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-                            {tag}
+                          <span key={tag} className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${tagColorClasses(tag)}`}>
+                            {emojiForTag(tag)} {tag}
                           </span>
                         ))}
                         {recipe.categories.length > 3 && <span className="text-[10px] text-stone-400">+{recipe.categories.length - 3}</span>}
@@ -358,9 +393,21 @@ export default function RecipesPage() {
         <RecipeTagManager
           tags={allTags}
           counts={tagCounts}
+          error={tagError}
           onAdd={handleCreateTag}
           onRename={handleRenameTag}
           onDelete={handleDeleteTag}
+          onClose={() => setModal(null)}
+        />
+      )}
+
+      {modal === "cleanup" && (
+        <RecipeCleanupPanel
+          recipes={recipes}
+          onDone={() => {
+            refetch();
+            refetchTags();
+          }}
           onClose={() => setModal(null)}
         />
       )}

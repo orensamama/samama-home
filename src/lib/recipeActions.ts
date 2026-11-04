@@ -3,10 +3,15 @@ import { supabase } from "@/lib/supabaseClient";
 import { logSupabaseError } from "@/lib/supabaseErrors";
 import { resizeForUpload } from "@/lib/ocrImage";
 import {
+  cleanTitle,
   embedFromUrl,
   emptyDraft,
   looksLikeRecipeText,
+  normalizeText,
   parseRecipeText,
+  splitTitle,
+  stripSocialPrefix,
+  suggestCategories,
   type Recipe,
   type RecipeDraft,
   type RecipeTag,
@@ -58,7 +63,7 @@ function withMirrors(row: Row): Row {
 
 function toRow(draft: RecipeDraft): Row {
   return withMirrors({
-    title: draft.title.trim() || "מתכון ללא שם",
+    title: cleanTitle(draft.title) || "מתכון ללא שם",
     categories: draft.categories ?? [],
     servings: draft.servings ?? null,
     ingredients: (draft.ingredients ?? []).map((line) => line.trim()).filter(Boolean),
@@ -268,7 +273,7 @@ async function rewriteRecipeCategories(recipes: Recipe[], map: (categories: stri
     recipes
       .map((recipe) => ({ recipe, next: map(recipe.categories) }))
       .filter(({ recipe, next }) => next.join("\u0000") !== recipe.categories.join("\u0000"))
-      .map(({ recipe, next }) => supabase.from("recipes").update({ categories: next }).eq("id", recipe.id))
+      .map(({ recipe, next }) => writeRecipe("update", withMirrors({ categories: next }), recipe.id, "עדכון תגיות"))
   );
   return results.find((result) => result.error)?.error ?? null;
 }
@@ -340,14 +345,19 @@ export function draftFromLink(url: string, info: LinkInfo | null, caption = ""):
   draft.source_url = info?.url ?? url;
   draft.embed_url = info?.embedUrl ?? embedFromUrl(url)?.embedUrl ?? null;
   draft.image_url = info?.image ?? null;
-  draft.title = (info?.title ?? "").trim();
 
-  const description = (info?.description ?? "").trim();
+  // The page's title is often a whole post ("291K views | dish | creator"): keep just the dish name.
+  const titleSplit = splitTitle(info?.title ?? "");
+  const genericTitle = /^(?:instagram|facebook|tiktok|youtube|reels?)$/i.test(titleSplit.title);
+  draft.title = genericTitle ? "" : titleSplit.title;
+
+  const description = stripSocialPrefix(info?.description ?? "");
+  const notes: string[] = [];
   if (info?.recipe) {
     draft.ingredients = info.recipe.ingredients;
     draft.instructions = info.recipe.instructions;
     draft.servings = info.recipe.servings;
-    draft.description = description;
+    if (description) notes.push(description);
   } else if (description && looksLikeRecipeText(description)) {
     const parsed = parseRecipeText(description);
     draft.ingredients = parsed.ingredients;
@@ -355,15 +365,21 @@ export function draftFromLink(url: string, info: LinkInfo | null, caption = ""):
     draft.tips = parsed.tips;
     draft.servings = parsed.servings;
     if (!draft.title) draft.title = parsed.title;
-    draft.description = description;
+    if (parsed.intro) notes.push(parsed.intro);
     draft.original_text = description;
   } else {
-    draft.description = description;
+    if (description) notes.push(description);
     draft.original_text = description || null;
   }
   if (caption.trim()) {
-    draft.description = [caption.trim(), draft.description].filter(Boolean).join("\n\n");
-    if (!draft.title) draft.title = caption.trim().split("\n")[0].slice(0, 80);
+    notes.unshift(caption.trim());
+    if (!draft.title) draft.title = cleanTitle(caption.trim().split(/\r?\n/)[0]);
   }
+  // Whatever the title carried besides the dish name (counts, creator, caption) is kept as a note.
+  if (titleSplit.extra && !genericTitle && !notes.some((note) => normalizeText(note).includes(normalizeText(titleSplit.extra).slice(0, 50)))) {
+    notes.push(titleSplit.extra);
+  }
+  draft.description = notes.join("\n\n");
+  draft.categories = suggestCategories({ title: draft.title, ingredients: draft.ingredients });
   return draft;
 }

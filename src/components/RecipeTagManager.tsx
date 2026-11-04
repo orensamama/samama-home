@@ -2,7 +2,8 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { Plus, Trash2, X } from "lucide-react";
-import { SUGGESTED_TAGS } from "@/lib/recipeData";
+import SetupSqlButton from "@/components/SetupSqlButton";
+import { SUGGESTED_TAGS, emojiForTag } from "@/lib/recipeData";
 
 function TagRow({
   name,
@@ -25,6 +26,9 @@ function TagRow({
 
   return (
     <li className="flex items-center gap-2 py-1.5">
+      <span className="shrink-0 text-lg" aria-hidden="true">
+        {emojiForTag(name)}
+      </span>
       <input
         type="text"
         key={name}
@@ -67,6 +71,7 @@ function TagRow({
 export default function RecipeTagManager({
   tags,
   counts,
+  error,
   onAdd,
   onRename,
   onDelete,
@@ -75,6 +80,8 @@ export default function RecipeTagManager({
   tags: string[];
   /** tag name -> how many recipes carry it */
   counts: Map<string, number>;
+  /** Set when a new tag couldn't be saved to the database (it still works for now). */
+  error?: { message: string; needsSql: boolean } | null;
   onAdd: (name: string) => void;
   onRename: (oldName: string, newName: string) => void;
   onDelete: (name: string) => void;
@@ -110,6 +117,13 @@ export default function RecipeTagManager({
           <p className="text-xs text-stone-500 dark:text-stone-400">
             שינוי שם מתעדכן בכל המתכונים. מחיקת תגית מסירה אותה מהמתכונים - המתכונים עצמם נשארים.
           </p>
+
+          {error && (
+            <div className="flex flex-col gap-2 rounded-xl bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+              <p>{error.message}</p>
+              {error.needsSql && <SetupSqlButton />}
+            </div>
+          )}
 
           <form onSubmit={handleAdd} className="flex gap-1.5">
             <input
@@ -156,7 +170,7 @@ export default function RecipeTagManager({
                     onClick={() => onAdd(tag)}
                     className="rounded-full border border-dashed border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-stone-800"
                   >
-                    + {tag}
+                    {emojiForTag(tag)} + {tag}
                   </button>
                 ))}
               </div>

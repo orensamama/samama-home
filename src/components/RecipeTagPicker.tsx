@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Plus } from "lucide-react";
+import { SUGGESTED_TAGS, emojiForTag } from "@/lib/recipeData";
 
 /** Multi-select tag chips (a recipe can carry any number of categories) with an inline "new tag". */
 export default function RecipeTagPicker({
@@ -19,6 +20,14 @@ export default function RecipeTagPicker({
   const [draft, setDraft] = useState("");
   // Selected tags that aren't in the list yet (just created) still show.
   const names = Array.from(new Set([...allTags, ...selected]));
+
+  // Ready-made categories not in use yet: one tap adds the tag to the family's list AND to this recipe.
+  const suggestions = SUGGESTED_TAGS.filter((tag) => !names.includes(tag)).slice(0, 8);
+
+  function addSuggested(name: string) {
+    onCreate?.(name);
+    if (!selected.includes(name)) onChange([...selected, name]);
+  }
 
   function toggle(name: string) {
     onChange(selected.includes(name) ? selected.filter((tag) => tag !== name) : [...selected, name]);
@@ -56,6 +65,20 @@ export default function RecipeTagPicker({
         })}
         {names.length === 0 && <p className="text-xs text-stone-400">עדיין אין תגיות - הוסיפו את הראשונה למטה.</p>}
       </div>
+      {suggestions.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {suggestions.map((name) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => addSuggested(name)}
+              className="rounded-full border border-dashed border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-stone-800"
+            >
+              {emojiForTag(name)} + {name}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="flex gap-1.5">
         <input
           type="text"
