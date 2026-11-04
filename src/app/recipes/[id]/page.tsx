@@ -162,9 +162,7 @@ export default function RecipePage() {
           </div>
         )}
 
-        {recipe.embed_url ? (
-          <VideoEmbed embedUrl={recipe.embed_url} sourceUrl={recipe.source_url} />
-        ) : (
+        {!recipe.embed_url && (
           <>
             {recipe.image_url ? (
               // eslint-disable-next-line @next/next/no-img-element -- user-uploaded / site image, arbitrary host
@@ -287,6 +285,14 @@ export default function RecipePage() {
             <summary className="cursor-pointer text-sm font-bold text-stone-800 dark:text-stone-100">הטקסט המקורי (כפי שהתקבל)</summary>
             <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-stone-500 dark:text-stone-400">{recipe.original_text}</p>
           </details>
+        )}
+
+        {/* The video comes last: the ingredients and the method are the first things on the page. */}
+        {recipe.embed_url && (
+          <section className="flex flex-col gap-2">
+            <h2 className="text-sm font-bold text-stone-800 dark:text-stone-100">הסרטון המקורי</h2>
+            <VideoEmbed embedUrl={recipe.embed_url} sourceUrl={recipe.source_url} />
+          </section>
         )}
 
         {recipe.ingredients.length === 0 && !recipe.instructions && !recipe.embed_url && !recipe.description && (

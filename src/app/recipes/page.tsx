@@ -29,13 +29,16 @@ import {
 
 type Modal = "add" | "form" | "import" | "tags" | "cleanup" | null;
 
+/** What the category cards have selected: favourites, one category, the uncategorised ones, or everything. */
+type View = { kind: "favorites" } | { kind: "tag"; name: string } | { kind: "uncategorized" } | { kind: "all" } | null;
+
 export default function RecipesPage() {
   const { recipes, tags, loading, fetched, error, refetch, refetchTags } = useRecipes();
 
   const [text, setText] = useState("");
   const [haveMode, setHaveMode] = useState(false);
   const [have, setHave] = useState("");
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [view, setView] = useState<View>(null);
 
   const [modal, setModal] = useState<Modal>(null);
   const [draft, setDraft] = useState<RecipeDraft>(emptyDraft());
@@ -57,11 +60,36 @@ export default function RecipesPage() {
     return counts;
   }, [recipes]);
 
+  const favoriteCount = useMemo(() => recipes.filter((recipe) => recipe.is_favorite).length, [recipes]);
+  const uncategorizedCount = useMemo(() => recipes.filter((recipe) => recipe.categories.length === 0).length, [recipes]);
+
+  // A recipe in several categories shows up under each of them (the filter is "carries this tag").
   const matches = useMemo(
-    () => searchRecipes(recipes, { text, tags: selectedTags, have: haveMode ? have : "" }),
-    [recipes, text, selectedTags, haveMode, have]
+    () =>
+      searchRecipes(recipes, { text, tags: view?.kind === "tag" ? [view.name] : [], have: haveMode ? have : "" }).filter(({ recipe }) =>
+        view?.kind === "favorites" ? recipe.is_favorite : view?.kind === "uncategorized" ? recipe.categories.length === 0 : true
+      ),
+    [recipes, text, view, haveMode, have]
   );
-  const filtering = text.trim() !== "" || selectedTags.length > 0 || (haveMode && have.trim() !== "");
+  const searching = text.trim() !== "" || (haveMode && have.trim() !== "");
+  const showList = view !== null || searching;
+  const listTitle = searching
+    ? "תוצאות חיפוש"
+    : view?.kind === "favorites"
+      ? "⭐ מועדפים"
+      : view?.kind === "tag"
+        ? `${emojiForTag(view.name)} ${view.name}`
+        : view?.kind === "uncategorized"
+          ? "📂 ללא קטגוריה"
+          : "📖 כל המתכונים";
+
+  // Tapping the selected card again closes it.
+  function pickView(next: NonNullable<View>) {
+    setView((current) => {
+      if (current?.kind !== next.kind) return next;
+      return current.kind === "tag" && next.kind === "tag" && current.name !== next.name ? next : null;
+    });
+  }
 
   const handleCreateTag = useCallback(
     async (nameRaw: string) => {
@@ -131,7 +159,7 @@ export default function RecipesPage() {
   async function handleRenameTag(oldName: string, newName: string) {
     const { error: renameError } = await renameTag(oldName, newName, tags, recipes);
     if (renameError) setPageError(friendlyErrorMessage(renameError));
-    setSelectedTags((current) => current.map((tag) => (tag === oldName ? newName : tag)));
+    setView((current) => (current?.kind === "tag" && current.name === oldName ? { kind: "tag", name: newName } : current));
     refetchTags();
     refetch();
   }
@@ -139,7 +167,7 @@ export default function RecipesPage() {
   async function handleDeleteTag(name: string) {
     const { error: deleteError } = await deleteTag(name, tags, recipes);
     if (deleteError) setPageError(friendlyErrorMessage(deleteError));
-    setSelectedTags((current) => current.filter((tag) => tag !== name));
+    setView((current) => (current?.kind === "tag" && current.name === name ? null : current));
     refetchTags();
     refetch();
   }
@@ -239,40 +267,81 @@ export default function RecipesPage() {
           </div>
         )}
 
-        {allTags.length > 0 && (
-          <div>
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4" role="group" aria-label="סינון לפי קטגוריות">
-              {allTags.map((tag) => {
-                const on = selectedTags.includes(tag);
-                return (
-                  <button
-                    key={tag}
-                    type="button"
-                    aria-pressed={on}
-                    onClick={() => setSelectedTags((current) => (on ? current.filter((t) => t !== tag) : [...current, tag]))}
-                    className={`flex flex-col items-center gap-0.5 rounded-2xl border px-1.5 py-2.5 text-center transition-all active:scale-95 ${
-                      on ? "border-amber-500 bg-amber-500 text-white shadow-md" : `${tagColorClasses(tag)} hover:shadow-sm`
-                    }`}
-                  >
-                    <span className="text-2xl leading-none" aria-hidden="true">
-                      {emojiForTag(tag)}
-                    </span>
-                    <span className="line-clamp-2 text-[11px] font-semibold leading-tight">{tag}</span>
-                    <span className={`text-[10px] tabular-nums ${on ? "text-white/80" : "opacity-60"}`}>{tagCounts.get(tag) ?? 0}</span>
-                  </button>
-                );
-              })}
-            </div>
-            {selectedTags.length > 0 && (
-              <button type="button" onClick={() => setSelectedTags([])} className="mt-2 text-xs font-medium text-amber-600 hover:underline dark:text-amber-400">
-                נקה סינון ({selectedTags.length})
+        {/* Category cards only: the recipes of a category show once it's picked */}
+        {recipes.length > 0 && (
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4" role="group" aria-label="קטגוריות">
+            <button
+              type="button"
+              aria-pressed={view?.kind === "favorites"}
+              onClick={() => pickView({ kind: "favorites" })}
+              className={`col-span-3 flex items-center gap-3 rounded-2xl border px-4 py-3 text-right transition-all active:scale-[0.98] sm:col-span-4 ${
+                view?.kind === "favorites"
+                  ? "border-amber-500 bg-gradient-to-l from-amber-500 to-orange-500 text-white shadow-md"
+                  : "border-amber-300 bg-gradient-to-l from-amber-100 to-orange-50 text-amber-900 hover:shadow-sm dark:border-amber-800 dark:from-amber-950/50 dark:to-orange-950/20 dark:text-amber-200"
+              }`}
+            >
+              <span className="text-3xl leading-none" aria-hidden="true">
+                ⭐
+              </span>
+              <span className="flex-1 text-base font-bold">מועדפים</span>
+              <span className={`rounded-full px-2.5 py-0.5 text-sm font-bold tabular-nums ${view?.kind === "favorites" ? "bg-white/25" : "bg-white/70 dark:bg-stone-900/50"}`}>{favoriteCount}</span>
+            </button>
+
+            {allTags.map((tag) => {
+              const on = view?.kind === "tag" && view.name === tag;
+              return (
+                <button
+                  key={tag}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => pickView({ kind: "tag", name: tag })}
+                  className={`flex flex-col items-center gap-0.5 rounded-2xl border px-1.5 py-2.5 text-center transition-all active:scale-95 ${
+                    on ? "border-amber-500 bg-amber-500 text-white shadow-md" : `${tagColorClasses(tag)} hover:shadow-sm`
+                  }`}
+                >
+                  <span className="text-2xl leading-none" aria-hidden="true">
+                    {emojiForTag(tag)}
+                  </span>
+                  <span className="line-clamp-2 text-[11px] font-semibold leading-tight">{tag}</span>
+                  <span className={`text-[10px] tabular-nums ${on ? "text-white/80" : "opacity-60"}`}>{tagCounts.get(tag) ?? 0}</span>
+                </button>
+              );
+            })}
+
+            {uncategorizedCount > 0 && (
+              <button
+                type="button"
+                aria-pressed={view?.kind === "uncategorized"}
+                onClick={() => pickView({ kind: "uncategorized" })}
+                className={`flex flex-col items-center gap-0.5 rounded-2xl border px-1.5 py-2.5 text-center transition-all active:scale-95 ${
+                  view?.kind === "uncategorized" ? "border-amber-500 bg-amber-500 text-white shadow-md" : "border-stone-200 bg-stone-50 text-stone-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
+                }`}
+              >
+                <span className="text-2xl leading-none" aria-hidden="true">
+                  📂
+                </span>
+                <span className="text-[11px] font-semibold leading-tight">ללא קטגוריה</span>
+                <span className="text-[10px] tabular-nums opacity-60">{uncategorizedCount}</span>
               </button>
             )}
+            <button
+              type="button"
+              aria-pressed={view?.kind === "all"}
+              onClick={() => pickView({ kind: "all" })}
+              className={`flex flex-col items-center gap-0.5 rounded-2xl border px-1.5 py-2.5 text-center transition-all active:scale-95 ${
+                view?.kind === "all" ? "border-amber-500 bg-amber-500 text-white shadow-md" : "border-stone-200 bg-stone-50 text-stone-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
+              }`}
+            >
+              <span className="text-2xl leading-none" aria-hidden="true">
+                📖
+              </span>
+              <span className="text-[11px] font-semibold leading-tight">כל המתכונים</span>
+              <span className="text-[10px] tabular-nums opacity-60">{recipes.length}</span>
+            </button>
           </div>
         )}
-        {selectedTags.length > 1 && <p className="-mt-1 text-[11px] text-stone-400">מוצגים מתכונים שיש בהם את כל התגיות שנבחרו</p>}
 
-        {/* List */}
+        {/* List: only for a picked category / search */}
         {loading && recipes.length === 0 ? (
           <SkeletonList count={4} itemClassName="h-24" />
         ) : fetched && recipes.length === 0 && !error ? (
@@ -284,62 +353,77 @@ export default function RecipesPage() {
               הוספת המתכון הראשון
             </button>
           </div>
-        ) : matches.length === 0 ? (
-          recipes.length > 0 && (
-            <p className="rounded-2xl border border-dashed border-amber-200 p-6 text-center text-sm text-stone-400 dark:border-amber-900/40">
-              לא נמצאו מתכונים שמתאימים{filtering ? " לחיפוש" : ""}
-            </p>
-          )
+        ) : !showList ? (
+          recipes.length > 0 && <p className="text-center text-xs text-stone-400 dark:text-stone-500">בחרו קטגוריה כדי לראות את המתכונים שלה, או חפשו למעלה.</p>
         ) : (
-          <ul className="flex flex-col gap-2.5">
-            {matches.map(({ recipe, haveCount, total }) => (
-              <li key={recipe.id}>
-                <Link
-                  href={`/recipes/${recipe.id}`}
-                  className="flex max-h-28 gap-3 overflow-hidden rounded-2xl border border-amber-100 bg-white p-3 shadow-sm transition-shadow hover:shadow-md dark:border-amber-950/30 dark:bg-stone-900"
-                >
-                  <span className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-amber-50 dark:bg-amber-950/30">
-                    {recipe.image_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element -- user-uploaded / site image, arbitrary host
-                      <img src={recipe.image_url} alt="" loading="lazy" className="h-full w-full object-cover" />
-                    ) : (
-                      <ChefHat className="h-8 w-8 text-amber-300" />
-                    )}
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="flex items-start gap-1.5">
-                      <span className="line-clamp-2 min-w-0 flex-1 text-sm font-bold leading-snug text-stone-800 dark:text-stone-100">{recipe.title}</span>
-                      {recipe.is_favorite && <Star className="h-4 w-4 shrink-0 fill-amber-400 text-amber-500" />}
-                    </span>
-                    {recipe.categories.length > 0 && (
-                      <span className="flex flex-wrap gap-1">
-                        {recipe.categories.slice(0, 3).map((tag) => (
-                          <span key={tag} className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${tagColorClasses(tag)}`}>
-                            {emojiForTag(tag)} {tag}
-                          </span>
-                        ))}
-                        {recipe.categories.length > 3 && <span className="text-[10px] text-stone-400">+{recipe.categories.length - 3}</span>}
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-bold text-stone-700 dark:text-stone-200">
+                {listTitle} <span className="font-normal text-stone-400">({matches.length})</span>
+              </h2>
+              {view && (
+                <button type="button" onClick={() => setView(null)} className="text-xs font-medium text-amber-600 hover:underline dark:text-amber-400">
+                  חזרה לקטגוריות
+                </button>
+              )}
+            </div>
+
+            {matches.length === 0 ? (
+              <p className="rounded-2xl border border-dashed border-amber-200 p-6 text-center text-sm text-stone-400 dark:border-amber-900/40">
+                {view?.kind === "favorites" ? "עדיין לא סימנתם מתכונים מועדפים - פתחו מתכון ולחצו על הכוכב." : "לא נמצאו מתכונים שמתאימים"}
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-2.5">
+                {matches.map(({ recipe, haveCount, total }) => (
+                  <li key={recipe.id}>
+                    <Link
+                      href={`/recipes/${recipe.id}`}
+                      className="flex max-h-28 gap-3 overflow-hidden rounded-2xl border border-amber-100 bg-white p-3 shadow-sm transition-shadow hover:shadow-md dark:border-amber-950/30 dark:bg-stone-900"
+                    >
+                      <span className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-amber-50 dark:bg-amber-950/30">
+                        {recipe.image_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element -- user-uploaded / site image, arbitrary host
+                          <img src={recipe.image_url} alt="" loading="lazy" className="h-full w-full object-cover" />
+                        ) : (
+                          <ChefHat className="h-8 w-8 text-amber-300" />
+                        )}
                       </span>
-                    )}
-                    <span className="mt-auto flex items-center gap-2 text-[11px] text-stone-400 dark:text-stone-500">
-                      {recipe.ingredients.length > 0 && <span>{recipe.ingredients.length} מצרכים</span>}
-                      {recipe.embed_url && (
-                        <span className="flex items-center gap-0.5 text-sky-500">
-                          <Video className="h-3 w-3" />
-                          סרטון
+                      <span className="flex min-w-0 flex-1 flex-col gap-1">
+                        <span className="flex items-start gap-1.5">
+                          <span className="line-clamp-2 min-w-0 flex-1 text-sm font-bold leading-snug text-stone-800 dark:text-stone-100">{recipe.title}</span>
+                          {recipe.is_favorite && <Star className="h-4 w-4 shrink-0 fill-amber-400 text-amber-500" />}
                         </span>
-                      )}
-                      {haveMode && have.trim() && (
-                        <span className="rounded-full bg-sky-100 px-2 py-0.5 font-semibold text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
-                          יש לך {haveCount} מתוך {total}
+                        {recipe.categories.length > 0 && (
+                          <span className="flex flex-wrap gap-1">
+                            {recipe.categories.slice(0, 3).map((tag) => (
+                              <span key={tag} className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${tagColorClasses(tag)}`}>
+                                {emojiForTag(tag)} {tag}
+                              </span>
+                            ))}
+                            {recipe.categories.length > 3 && <span className="text-[10px] text-stone-400">+{recipe.categories.length - 3}</span>}
+                          </span>
+                        )}
+                        <span className="mt-auto flex items-center gap-2 text-[11px] text-stone-400 dark:text-stone-500">
+                          {recipe.ingredients.length > 0 && <span>{recipe.ingredients.length} מצרכים</span>}
+                          {recipe.embed_url && (
+                            <span className="flex items-center gap-0.5 text-sky-500">
+                              <Video className="h-3 w-3" />
+                              סרטון
+                            </span>
+                          )}
+                          {haveMode && have.trim() && (
+                            <span className="rounded-full bg-sky-100 px-2 py-0.5 font-semibold text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                              יש לך {haveCount} מתוך {total}
+                            </span>
+                          )}
                         </span>
-                      )}
-                    </span>
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </div>
 

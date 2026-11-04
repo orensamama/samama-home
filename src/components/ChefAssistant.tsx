@@ -9,8 +9,8 @@ type Turn = { role: "user" | "assistant"; content: string };
 const SUGGESTIONS = ["מה אפשר לשים במקום כמון?", "איך להכין את זה בנינג'ה / איר פרייר?", "איך להפוך את המתכון לפרווה?", "איך אפשר להקטין את הכמות לשניים?"];
 
 const ERROR_TEXT: Record<string, string> = {
-  no_key: "העוזר עדיין לא הופעל: צריך להגדיר ANTHROPIC_API_KEY בהגדרות הפרויקט ב-Vercel (Settings ← Environment Variables) ולפרוס מחדש.",
-  bad_key: "מפתח ה-API שהוגדר לא תקין. בדקו את ANTHROPIC_API_KEY ב-Vercel.",
+  no_key: "העוזר עדיין לא הופעל: צריך להגדיר GEMINI_API_KEY בהגדרות הפרויקט ב-Vercel (Settings ← Environment Variables) ולפרוס מחדש. מפתח חינמי: aistudio.google.com/apikey",
+  bad_key: "מפתח ה-API שהוגדר לא תקין. בדקו את GEMINI_API_KEY ב-Vercel.",
   rate_limited: "יותר מדי שאלות בזמן קצר. נסו שוב בעוד כמה דקות.",
   busy: "השף עסוק כרגע. נסו שוב בעוד רגע.",
 };

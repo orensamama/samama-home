@@ -1,8 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from "@google/generative-ai";
 
 // "Ask the Chef": answers questions about ONE recipe (substitutions, other appliances,
-// making it dairy-free...) with Claude. The API key stays on the server
-// (ANTHROPIC_API_KEY in the Vercel project settings) and never reaches the browser.
+// making it dairy-free...) with Google Gemini (free tier). The API key stays on the server
+// (GEMINI_API_KEY in the Vercel project settings) and never reaches the browser.
 //
 // This route has no sign-in, like the rest of the app, so it is limited: short questions,
 // a short history, a bounded recipe, and a per-visitor rate limit -- enough to stop a
@@ -15,6 +15,11 @@ const MAX_HISTORY = 8;
 const MAX_RECIPE_CHARS = 8000;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
+
+// The model asked for is tried first. Google retires old model names (1.5 is gone from
+// most accounts), so if it isn't found the next current Flash model is used instead.
+const REQUESTED_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
 const hits = new Map<string, number[]>();
 
@@ -56,7 +61,8 @@ function recipeContext(recipe: NonNullable<ChefRequest["recipe"]>): string {
 }
 
 export async function POST(request: Request) {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
     return Response.json({ error: "no_key" }, { status: 503 });
   }
 
@@ -85,33 +91,44 @@ export async function POST(request: Request) {
     return Response.json({ error: "bad_request" }, { status: 400 });
   }
 
-  const client = new Anthropic();
-  try {
-    const response = await client.beta.messages.create({
-      model: process.env.ANTHROPIC_MODEL || "claude-opus-5-5",
-      max_tokens: 2000,
-      // Short chat answers: low effort is plenty (and the default on this model is higher).
-      output_config: { effort: "low" },
-      // If a safety classifier declines, let the API retry on its default fallback model.
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      system: `${SYSTEM}\n\n--- המתכון ---\n${recipeContext(body.recipe)}`,
-      messages: turns,
-    });
+  // Gemini's roles are "user" / "model".
+  const contents = turns.map((turn) => ({ role: turn.role === "user" ? "user" : "model", parts: [{ text: turn.content }] }));
+  const systemInstruction = `${SYSTEM}
 
-    if (response.stop_reason === "refusal") {
-      return Response.json({ answer: "מצטער, לא אוכל לענות על זה. אפשר לנסות לנסח את השאלה אחרת." });
+--- המתכון ---
+${recipeContext(body.recipe)}`;
+  const genAI = new GoogleGenerativeAI(apiKey);
+
+  let lastError: unknown = null;
+  for (const modelName of Array.from(new Set([REQUESTED_MODEL, ...FALLBACK_MODELS]))) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        systemInstruction,
+        generationConfig: { maxOutputTokens: 900, temperature: 0.6 },
+      });
+      const result = await model.generateContent({ contents });
+      const blocked = result.response.promptFeedback?.blockReason;
+      if (blocked) return Response.json({ answer: "מצטער, לא אוכל לענות על זה. אפשר לנסות לנסח את השאלה אחרת." });
+      let answer = "";
+      try {
+        answer = result.response.text().trim();
+      } catch {
+        // a response cut off by a safety filter has no text
+      }
+      return Response.json({ answer: answer || "לא הצלחתי לנסח תשובה. נסו לשאול שוב." });
+    } catch (error) {
+      lastError = error;
+      console.error(`[chef] Gemini error (${modelName}):`, error);
+      // Model not found / not supported for this API version: try the next one. Anything else is final.
+      const status = error instanceof GoogleGenerativeAIFetchError ? error.status : undefined;
+      if (status !== 404) break;
     }
-    const answer = response.content
-      .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
-      .map((block) => block.text)
-      .join("\n")
-      .trim();
-    return Response.json({ answer: answer || "לא הצלחתי לנסח תשובה. נסו לשאול שוב." });
-  } catch (error) {
-    console.error("[chef] Claude API error:", error);
-    if (error instanceof Anthropic.AuthenticationError) return Response.json({ error: "bad_key" }, { status: 502 });
-    if (error instanceof Anthropic.RateLimitError) return Response.json({ error: "busy" }, { status: 429 });
-    return Response.json({ error: "failed" }, { status: 502 });
   }
+
+  const status = lastError instanceof GoogleGenerativeAIFetchError ? lastError.status : undefined;
+  if (status === 400 && /API key/i.test(String((lastError as Error).message))) return Response.json({ error: "bad_key" }, { status: 502 });
+  if (status === 401 || status === 403) return Response.json({ error: "bad_key" }, { status: 502 });
+  if (status === 429) return Response.json({ error: "busy" }, { status: 429 });
+  return Response.json({ error: "failed" }, { status: 502 });
 }
