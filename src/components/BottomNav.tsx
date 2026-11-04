@@ -6,7 +6,7 @@ import {
   LayoutDashboard,
   ListChecks,
   ShoppingCart,
-  CalendarDays,
+  ChefHat,
   Wallet,
 } from "lucide-react";
 
@@ -14,7 +14,7 @@ const NAV_ITEMS = [
   { href: "/", label: "דשבורד", icon: LayoutDashboard },
   { href: "/tasks", label: "משימות", icon: ListChecks },
   { href: "/shopping", label: "קניות", icon: ShoppingCart },
-  { href: "/events", label: "אירועים", icon: CalendarDays },
+  { href: "/recipes", label: "מתכונים", icon: ChefHat },
   { href: "/budget", label: "פיננסממה", icon: Wallet },
 ];
 

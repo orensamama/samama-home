@@ -1,14 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { ListChecks, ShoppingCart } from "lucide-react";
+import { BookOpen, ShoppingCart } from "lucide-react";
 import { useSupabaseTable } from "@/lib/useSupabaseTable";
+import { useRecipes } from "@/lib/useRecipes";
 import { SkeletonGrid } from "@/components/Skeleton";
-import { isDueToday, type Task } from "@/lib/taskData";
+import { collectTags } from "@/lib/recipeData";
 import type { ShoppingItem } from "@/lib/shoppingData";
 
 export default function SummaryCards() {
-  const { rows: tasks, loading: tasksLoading } = useSupabaseTable<Task>("tasks");
+  const { recipes, tags, loading: recipesLoading } = useRecipes();
   // Same table+select+orderBy as ShoppingArsenal/LiveShoppingList, so all
   // three share one cached fetch instead of each re-querying "shopping" on
   // its own when the user switches tabs.
@@ -17,22 +18,18 @@ export default function SummaryCards() {
     ascending: true,
   });
 
-  if ((tasksLoading && tasks.length === 0) || (shoppingLoading && shopping.length === 0)) {
+  if ((recipesLoading && recipes.length === 0) || (shoppingLoading && shopping.length === 0)) {
     return <SkeletonGrid />;
   }
 
+  const categoryCount = collectTags(tags, recipes).length;
   const cards = [
     {
-      href: "/tasks",
-      label: "משימות בדחיפות גבוהה",
-      value: tasks.filter(
-        (task) =>
-          !task.is_template &&
-          !task.archived &&
-          task.status !== "done" &&
-          (task.urgency === "high" || (task.due_date && isDueToday(task.due_date)))
-      ).length,
-      icon: ListChecks,
+      href: "/recipes",
+      label: "ספר המתכונים המשפחתי",
+      value: recipes.length,
+      sub: recipes.length === 0 ? "מתחילים לאסוף" : categoryCount > 0 ? `מתכונים · ${categoryCount} קטגוריות` : "מתכונים",
+      icon: BookOpen,
       color: "text-orange-600 dark:text-orange-400",
       bg: "bg-orange-50 dark:bg-orange-950/40",
     },
@@ -40,6 +37,7 @@ export default function SummaryCards() {
       href: "/shopping?view=live",
       label: "רשימת הקניות שלי",
       value: shopping.filter((item) => item.in_cart && !item.completed).length,
+      sub: null,
       icon: ShoppingCart,
       color: "text-amber-600 dark:text-amber-400",
       bg: "bg-amber-50 dark:bg-amber-950/40",
@@ -48,7 +46,7 @@ export default function SummaryCards() {
 
   return (
     <div className="grid grid-cols-2 gap-3">
-      {cards.map(({ href, label, value, icon: Icon, color, bg }) => (
+      {cards.map(({ href, label, value, sub, icon: Icon, color, bg }) => (
         <Link
           key={href}
           href={href}
@@ -59,7 +57,10 @@ export default function SummaryCards() {
           </span>
           <div>
             <p className="text-sm text-stone-500 dark:text-stone-400">{label}</p>
-            <p className="mt-0.5 text-xl font-bold text-stone-800 dark:text-stone-100">{value}</p>
+            <p className="mt-0.5 text-xl font-bold text-stone-800 dark:text-stone-100">
+              {value}
+              {sub && <span className="ms-1.5 text-xs font-medium text-stone-400 dark:text-stone-500">{sub}</span>}
+            </p>
           </div>
         </Link>
       ))}
