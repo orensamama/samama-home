@@ -74,9 +74,96 @@ function toRow(draft: RecipeDraft): Row {
   });
 }
 
+// --- what the live table actually looks like -----------------------------------------
+
+export type RecipesSchema = {
+  source: "openapi" | "probe";
+  /** column name -> its declared type ("" when unknown) */
+  columns: Map<string, string>;
+  /** NOT NULL columns without a default (only known from the OpenAPI description) */
+  required: string[];
+};
+
+const KNOWN_COLUMNS = [
+  "id", "title", "categories", "tags", "servings", "ingredients", "instructions", "tips", "notes", "description",
+  "source_url", "embed_url", "media_url", "source_type", "image_url", "original_text", "is_favorite", "created_at", "updated_at",
+];
+
+let schemaCache: { at: number; value: Promise<RecipesSchema | null> } | null = null;
+
+async function readSchema(): Promise<RecipesSchema | null> {
+  // 1) PostgREST's own description of the table (types + required columns), when the project exposes it.
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (url && key) {
+    try {
+      const response = await fetch(`${url}/rest/v1/`, { headers: { apikey: key, Authorization: `Bearer ${key}` } });
+      if (response.ok) {
+        const spec = (await response.json()) as {
+          definitions?: Record<string, { properties?: Record<string, { type?: string; format?: string }>; required?: string[] }>;
+        };
+        const table = spec.definitions?.recipes;
+        if (table?.properties) {
+          return {
+            source: "openapi",
+            columns: new Map(Object.entries(table.properties).map(([name, info]) => [name, `${info.type ?? ""}${info.format ? ` (${info.format})` : ""}`.trim()])),
+            required: table.required ?? [],
+          };
+        }
+      }
+    } catch {
+      // fall through to probing
+    }
+  }
+  // 2) Ask for each column by name: a missing one errors.
+  const probes = await Promise.all(
+    KNOWN_COLUMNS.map(async (column) => ({ column, error: (await supabase.from("recipes").select(column).limit(1)).error }))
+  );
+  const columns = probes.filter(({ error }) => !error || (error.code !== "42703" && error.code !== "PGRST204" && !/does not exist/i.test(error.message)));
+  // If every probe failed the same way the table itself is unreachable (missing / no permission): nothing to adapt to.
+  if (columns.length === 0) return null;
+  return { source: "probe", columns: new Map(columns.map(({ column }) => [column, ""])), required: [] };
+}
+
+/** Reads (and caches for a minute) the recipes table's real columns. Null when it can't be determined. */
+export function loadRecipesSchema(force = false): Promise<RecipesSchema | null> {
+  if (!force && schemaCache && Date.now() - schemaCache.at < 60_000) return schemaCache.value;
+  const value = readSchema().catch(() => null);
+  schemaCache = { at: Date.now(), value };
+  return value;
+}
+
+/** Human-readable table structure, for the error dialog and the console. */
+export async function describeRecipesTable(): Promise<string> {
+  const schema = await loadRecipesSchema(true);
+  if (!schema) return "לא ניתן לקרוא את מבנה הטבלה recipes (ייתכן שהיא לא קיימת, או שאין הרשאת קריאה).";
+  const lines = Array.from(schema.columns, ([name, type]) => `${name}${type ? `: ${type}` : ""}${schema.required.includes(name) ? "  (חובה)" : ""}`);
+  const missing = ["title", "categories", "ingredients", "instructions", "source_url", "description"].filter((name) => !schema.columns.has(name));
+  return [`עמודות בטבלה recipes (${schema.source === "openapi" ? "לפי PostgREST" : "נבדק בשאילתות"}):`, ...lines, ...(missing.length > 0 ? [`חסרות עמודות שהאפליקציה כותבת: ${missing.join(", ")} - הריצו את ה-SQL (מיגרציה 0023)`] : [])].join("\n");
+}
+
+/** Fits a row to the real table: only existing columns, array/text/number shapes as declared, required ones filled. */
+function adaptRow(row: Row, schema: RecipesSchema | null): Row {
+  if (!schema) return row;
+  const out: Row = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (key !== "title" && !schema.columns.has(key)) continue;
+    const type = schema.columns.get(key) ?? "";
+    if (type.startsWith("string") && Array.isArray(value)) out[key] = value.join(key === "ingredients" ? "\n" : ", ");
+    else if (type.startsWith("array") && value !== null && !Array.isArray(value)) out[key] = value === "" ? [] : [String(value)];
+    else if ((type.startsWith("integer") || type.startsWith("number")) && typeof value === "string") out[key] = value === "" ? null : Number(value);
+    else out[key] = value;
+  }
+  for (const column of schema.required) {
+    if (column !== "id" && out[column] === undefined) out[column] = defaultFor(column);
+  }
+  return out;
+}
+
 async function writeRecipe(op: "insert" | "update", row: Row, id?: string, context = "שמירת מתכון") {
-  const sent: Row = { ...row };
-  const dropped: string[] = [];
+  const schema = await loadRecipesSchema();
+  const sent: Row = adaptRow(row, schema);
+  const dropped: string[] = Object.keys(row).filter((key) => !(key in sent));
   const filled: string[] = [];
 
   for (let attempt = 0; attempt < 14; attempt++) {
@@ -100,6 +187,9 @@ async function writeRecipe(op: "insert" | "update", row: Row, id?: string, conte
       details: error.details,
       hint: error.hint,
       columnsSent: Object.keys(sent),
+      valueTypes: Object.fromEntries(Object.entries(sent).map(([key, value]) => [key, Array.isArray(value) ? `array(${value.length})` : value === null ? "null" : typeof value])),
+      tableColumns: schema ? Object.fromEntries(schema.columns) : "unknown",
+      requiredColumns: schema?.required ?? [],
     });
 
     // A column the table doesn't have (PostgREST: PGRST204, Postgres: 42703).

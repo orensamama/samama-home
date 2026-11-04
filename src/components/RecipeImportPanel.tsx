@@ -3,7 +3,8 @@
 import { useState, type ChangeEvent } from "react";
 import { FileUp, Link2, ScrollText, TriangleAlert, X } from "lucide-react";
 import RecipeTagPicker from "@/components/RecipeTagPicker";
-import { draftFromLink, fetchLinkInfo, insertRecipe, saveRecipeDraft } from "@/lib/recipeActions";
+import SetupSqlButton from "@/components/SetupSqlButton";
+import { describeRecipesTable, draftFromLink, fetchLinkInfo, insertRecipe, saveRecipeDraft } from "@/lib/recipeActions";
 import {
   recipeToDraft,
   embedFromUrl,
@@ -27,6 +28,16 @@ type ImportItem = {
   dup: DuplicateMatch | null;
   action: ImportAction;
   include: boolean;
+};
+
+/** One recipe that couldn't be saved, with Supabase's own words for why. */
+type SaveFailure = {
+  title: string;
+  action: string;
+  code?: string;
+  message: string;
+  details?: string | null;
+  hint?: string | null;
 };
 
 const MAX_LINKS = 80;
@@ -98,6 +109,9 @@ export default function RecipeImportPanel({
   const [mergedInFile, setMergedInFile] = useState(0);
   const [tags, setTags] = useState<string[]>([]);
   const [summary, setSummary] = useState<string[]>([]);
+  const [failures, setFailures] = useState<SaveFailure[]>([]);
+  const [tableInfo, setTableInfo] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function analyse(text: string) {
@@ -127,7 +141,12 @@ export default function RecipeImportPanel({
     for (const candidate of candidates) {
       const draft = drafts.get(candidate);
       if (!draft) continue;
-      const index = batch.findIndex((entry, i) => findDuplicate(draft, [asRecipe(entry.draft, `batch-${i}`)]) !== null);
+      // Inside the file only the same link or the same name counts as "the same recipe":
+      // two different pastas that merely share ingredients must stay separate.
+      const index = batch.findIndex((entry, i) => {
+        const match = findDuplicate(draft, [asRecipe(entry.draft, `batch-${i}`)]);
+        return match !== null && match.reason !== "same-ingredients";
+      });
       if (index >= 0) {
         // Newer version wins, but anything it lacks (e.g. a bare link vs. the full text posted earlier) is kept.
         const older = batch[index].draft;
@@ -192,15 +211,14 @@ export default function RecipeImportPanel({
     let added = 0;
     let updated = 0;
     let skipped = 0;
-    const failures: string[] = [];
-    let firstError: { code?: string; message: string } | null = null;
+    const failed: SaveFailure[] = [];
     for (const item of items) {
       if (!item.include || item.action === "skip") {
         skipped++;
         continue;
       }
       const draft: RecipeDraft = { ...item.draft, categories: Array.from(new Set([...item.draft.categories, ...tags])) };
-      let saveError: { code?: string; message: string } | null = null;
+      let saveError: { code?: string; message: string; details?: string | null; hint?: string | null } | null = null;
       if (item.action === "new" || !item.dup) {
         saveError = (await insertRecipe(draft)).error;
         if (!saveError) added++;
@@ -211,24 +229,36 @@ export default function RecipeImportPanel({
         if (!saveError) updated++;
       }
       if (saveError) {
-        failures.push(draft.title || "מתכון");
-        firstError = firstError ?? saveError;
+        failed.push({
+          title: draft.title || "מתכון ללא שם",
+          action: item.action === "new" || !item.dup ? "הוספה" : item.action === "merge" ? "מיזוג" : "החלפה",
+          code: saveError.code,
+          message: saveError.message,
+          details: saveError.details,
+          hint: saveError.hint,
+        });
       }
     }
 
     const lines = [`נוספו ${added} מתכונים חדשים`];
     if (updated > 0) lines.push(`עודכנו ${updated} מתכונים קיימים`);
-    if (skipped > 0) lines.push(`דולגו ${skipped}`);
-    if (mergedInFile > 0) lines.push(`${mergedInFile} כפילויות בתוך הקובץ אוחדו (נשמרה הגרסה האחרונה)`);
-    if (failures.length > 0) {
-      const reason = firstError as { code?: string; message: string } | null;
-      lines.push(`נכשלה שמירה של ${failures.length} פריטים: ${failures.slice(0, 5).join(", ")}${failures.length > 5 ? "..." : ""}`);
-      if (reason) lines.push(`הסיבה: ${reason.message}${reason.code ? ` (קוד ${reason.code})` : ""}`);
-      lines.push("פרטים מלאים בקונסול של הדפדפן (F12) תחת [Supabase] recipes. אם חסרה עמודה או הרשאה - הריצו את ה-SQL של ספר המתכונים (כפתור \"העתק SQL\" בעמוד המתכונים).");
-    }
+    if (skipped > 0) lines.push(`דולגו ${skipped} (כבר קיימים או שלא סומנו)`);
+    if (mergedInFile > 0) lines.push(`${mergedInFile} כפילויות בתוך הקובץ אוחדו (אותו שם או אותו קישור; נשמרה הגרסה האחרונה)`);
     setSummary(lines);
+    setFailures(failed);
     setStage("done");
     onDone();
+    // What the table really looks like, so a column/type mismatch is visible right here.
+    if (failed.length > 0) setTableInfo(await describeRecipesTable());
+  }
+
+  function copyDiagnostics() {
+    const text = [
+      ...failures.map((failure) => JSON.stringify(failure, null, 2)),
+      "",
+      tableInfo ?? "",
+    ].join("\n");
+    void navigator.clipboard?.writeText(text).then(() => setCopied(true));
   }
 
   const selected = items.filter((item) => item.include && item.action !== "skip").length;
@@ -382,11 +412,58 @@ export default function RecipeImportPanel({
           {stage === "saving" && <p className="py-6 text-center text-sm text-stone-600 dark:text-stone-300">מייבא...</p>}
 
           {stage === "done" && (
-            <ul className="flex flex-col gap-1 py-2 text-sm text-stone-700 dark:text-stone-200">
-              {summary.map((line) => (
-                <li key={line}>✓ {line}</li>
-              ))}
-            </ul>
+            <>
+              <ul className="flex flex-col gap-1 py-2 text-sm text-stone-700 dark:text-stone-200">
+                {summary.map((line) => (
+                  <li key={line}>✓ {line}</li>
+                ))}
+              </ul>
+
+              {failures.length > 0 && (
+                <div className="flex flex-col gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 dark:border-rose-900/50 dark:bg-rose-950/20">
+                  <p className="text-sm font-bold text-rose-700 dark:text-rose-300">
+                    ✗ נכשלה שמירה של {failures.length} פריטים - השגיאה המדויקת מ-Supabase:
+                  </p>
+                  <ul className="flex max-h-56 flex-col gap-2 overflow-y-auto">
+                    {failures.map((failure, index) => (
+                      <li key={`${index}-${failure.title}`} className="rounded-lg bg-white/70 p-2 text-xs dark:bg-stone-900/60">
+                        <p className="font-semibold text-stone-800 dark:text-stone-100">
+                          {failure.title} <span className="font-normal text-stone-400">({failure.action})</span>
+                        </p>
+                        <pre dir="ltr" className="mt-1 whitespace-pre-wrap break-words text-[11px] text-rose-700 dark:text-rose-300">
+                          {[
+                            failure.code ? `code: ${failure.code}` : null,
+                            `message: ${failure.message}`,
+                            failure.details ? `details: ${failure.details}` : null,
+                            failure.hint ? `hint: ${failure.hint}` : null,
+                          ]
+                            .filter(Boolean)
+                            .join("\n")}
+                        </pre>
+                      </li>
+                    ))}
+                  </ul>
+                  {tableInfo ? (
+                    <pre dir="ltr" className="max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-white/70 p-2 text-[11px] text-stone-600 dark:bg-stone-900/60 dark:text-stone-300">
+                      {tableInfo}
+                    </pre>
+                  ) : (
+                    <p className="text-[11px] text-stone-500">בודק את מבנה הטבלה...</p>
+                  )}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={copyDiagnostics}
+                      className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-600"
+                    >
+                      {copied ? "הועתק!" : "העתק פרטי שגיאה"}
+                    </button>
+                    <span className="text-[11px] text-stone-500 dark:text-stone-400">אותם פרטים מופיעים גם בקונסול (F12) תחת [Supabase] recipes.</span>
+                  </div>
+                  <SetupSqlButton />
+                </div>
+              )}
+            </>
           )}
         </div>
 
