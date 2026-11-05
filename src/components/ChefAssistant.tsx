@@ -5,7 +5,7 @@ import { ChefHat, Send, X } from "lucide-react";
 import { chefSuggestions } from "@/lib/chefSuggestions";
 import type { Recipe } from "@/lib/recipeData";
 
-const CLIENT_TIMEOUT_MS = 12000;
+const CLIENT_TIMEOUT_MS = 14000;
 
 type Turn ={ role: "user" | "assistant"; content: string };
 
@@ -14,7 +14,7 @@ const ERROR_TEXT: Record<string, string> = {
   no_key: "העוזר עדיין לא הופעל: צריך להגדיר GEMINI_API_KEY בהגדרות הפרויקט ב-Vercel (Settings ← Environment Variables) ולפרוס מחדש. מפתח חינמי: aistudio.google.com/apikey",
   bad_key: "מפתח ה-API שהוגדר לא תקין. בדקו את GEMINI_API_KEY ב-Vercel.",
   rate_limited: "יותר מדי שאלות בזמן קצר. נסו שוב בעוד כמה דקות.",
-  timeout: "השף לא הגיב בזמן (יותר מ-8 שניות). נסו שוב בעוד רגע, או נסחו את השאלה קצרה יותר.",
+  timeout: "השף לא הגיב בזמן (לקח יותר מדי זמן). נסו שוב בעוד רגע, או נסחו את השאלה קצרה יותר.",
   busy: "השף עסוק כרגע. נסו שוב בעוד רגע.",
 };
 

@@ -16,13 +16,15 @@ const MAX_RECIPE_CHARS = 8000;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 
-// Only the two official models are used: GEMINI_MODEL if set, else gemini-1.5-flash. If Google
-// answers "model not found" (404, which comes back at once) the OTHER official one is tried --
-// never any other name. All attempts share a single deadline, so the request can never hang:
+// Main model: GEMINI_MODEL if set, else gemini-2.5-flash. If that call fails for any reason other
+// than a bad key (model not found, overloaded, too slow, empty answer) the standard
+// gemini-1.5-flash is tried once. No other model names are used. The first attempt is capped so the
+// fallback always has time left, and the whole request has one deadline: it can never hang,
 // it always ends with an answer or a JSON error.
-const OFFICIAL_MODELS = ["gemini-1.5-flash", "gemini-2.0-flash"];
-const DEFAULT_MODEL = OFFICIAL_MODELS[0];
-const DEADLINE_MS = 8000;
+const DEFAULT_MODEL = "gemini-2.5-flash";
+const FALLBACK_MODEL = "gemini-1.5-flash";
+const FIRST_ATTEMPT_MS = 7000;
+const DEADLINE_MS = 11000;
 
 /** HTTP status of a Gemini SDK error ("[404 Not Found] ..." when the status field isn't set). */
 function statusOf(error: unknown): number | undefined {
@@ -128,24 +130,26 @@ ${recipeContext(body.recipe)}`;
 
   const started = Date.now();
   const primary = process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const models = [primary, ...OFFICIAL_MODELS.filter((name) => name !== primary)].slice(0, 2);
+  const models = Array.from(new Set([primary, FALLBACK_MODEL]));
   const attempts: { model: string; status?: number; message: string }[] = [];
 
-  for (const modelName of models) {
-    const remaining = DEADLINE_MS - (Date.now() - started);
+  for (const [index, modelName] of models.entries()) {
+    const left = DEADLINE_MS - (Date.now() - started);
+    // Leave the fallback time to run: the first model gets at most FIRST_ATTEMPT_MS.
+    const remaining = index === 0 && models.length > 1 ? Math.min(left, FIRST_ATTEMPT_MS) : left;
     if (remaining < 1000) break;
     try {
       const model = genAI.getGenerativeModel(
         {
           model: modelName,
           systemInstruction,
-          generationConfig: { maxOutputTokens: 1024, temperature: 0.6 },
+          generationConfig: { maxOutputTokens: 2048, temperature: 0.6 },
         },
         // The SDK aborts the HTTP request itself after this long.
         { timeout: remaining }
       );
       // Belt and braces: even if the SDK's own timeout didn't fire, never wait past the deadline.
-      const result = await withTimeout(model.generateContent({ contents }), remaining, `timeout after ${DEADLINE_MS / 1000}s`);
+      const result = await withTimeout(model.generateContent({ contents }), remaining, `timeout after ${Math.round(remaining / 1000)}s`);
       const blocked = result.response.promptFeedback?.blockReason;
       if (blocked) return Response.json({ answer: "מצטער, לא אוכל לענות על זה. אפשר לנסות לנסח את השאלה אחרת." });
       let answer = "";
@@ -162,8 +166,8 @@ ${recipeContext(body.recipe)}`;
       attempts.push({ model: modelName, status, message });
       console.log(error);
       console.error(`[chef] Gemini request failed (model ${modelName}, status ${status ?? "none"}):`, message);
-      // Only "model not found" is worth another model; a bad key, quota or timeout won't improve.
-      if (status !== 404) break;
+      // A bad key won't improve with another model; anything else (404, 429, 5xx, timeout) falls through to the fallback.
+      if (isKeyProblem(status, message)) break;
     }
   }
 
