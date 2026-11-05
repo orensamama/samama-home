@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { ChefHat, FileUp, Plus, Refrigerator, Search, Sparkles, Star, Tags, TriangleAlert, Video } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
+import ChefAssistant from "@/components/ChefAssistant";
 import { SkeletonList } from "@/components/Skeleton";
 import SetupSqlButton from "@/components/SetupSqlButton";
 import RecipeAddModal from "@/components/RecipeAddModal";
@@ -16,6 +17,7 @@ import { addTag, deleteTag, insertRecipe, patchRecipe, renameTag } from "@/lib/r
 import { friendlyErrorMessage } from "@/lib/supabaseErrors";
 import {
   collectTags,
+  draftFromText,
   emojiForTag,
   emptyDraft,
   findDuplicate,
@@ -41,6 +43,7 @@ export default function RecipesPage() {
   const [haveMode, setHaveMode] = useState(false);
   const [have, setHave] = useState("");
   const [view, setView] = useState<View>(null);
+  const [chefOpen, setChefOpen] = useState(false);
 
   const [modal, setModal] = useState<Modal>(null);
   const [draft, setDraft] = useState<RecipeDraft>(emptyDraft());
@@ -229,6 +232,14 @@ export default function RecipesPage() {
           >
             <Refrigerator className="h-3.5 w-3.5" />
             מה יש לי בבית?
+          </button>
+          <button
+            type="button"
+            onClick={() => setChefOpen(true)}
+            className={`${chipBase} flex items-center gap-1 border-stone-800 bg-stone-800 text-white hover:bg-stone-700 dark:border-amber-500 dark:bg-amber-500`}
+          >
+            <ChefHat className="h-3.5 w-3.5" />
+            שאל את השף
           </button>
           <button
             type="button"
@@ -436,11 +447,22 @@ export default function RecipesPage() {
         type="button"
         onClick={() => setModal("add")}
         aria-label="הוספת מתכון"
-        className="fixed bottom-20 left-4 z-40 flex items-center gap-1 rounded-full bg-amber-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-amber-600 active:scale-95"
+        className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] left-4 z-40 flex items-center gap-1 rounded-full bg-amber-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-amber-600 active:scale-95"
       >
         <Plus className="h-4 w-4" />
         מתכון
       </button>
+
+      {/* The free-standing chef: no recipe needed; any answer can become a new recipe. */}
+      <ChefAssistant
+        open={chefOpen}
+        onOpenChange={setChefOpen}
+        showFab={false}
+        onSaveAsRecipe={(answer) => {
+          const next = draftFromText(answer);
+          openForm(next, "נוצר מתשובת השף - בדקו ותקנו לפני השמירה.", reviewDraft(next));
+        }}
+      />
 
       {modal === "add" && (
         <RecipeAddModal

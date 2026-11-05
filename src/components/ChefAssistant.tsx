@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { ChefHat, Send, X } from "lucide-react";
+import { BookmarkPlus, ChefHat, Send, X } from "lucide-react";
 import { chefSuggestions } from "@/lib/chefSuggestions";
 import type { Recipe } from "@/lib/recipeData";
 
 const CLIENT_TIMEOUT_MS = 14000;
 
-type Turn ={ role: "user" | "assistant"; content: string };
-
+type Turn = { role: "user" | "assistant"; content: string };
 
 const ERROR_TEXT: Record<string, string> = {
   no_key: "העוזר עדיין לא הופעל: צריך להגדיר GEMINI_API_KEY בהגדרות הפרויקט ב-Vercel (Settings ← Environment Variables) ולפרוס מחדש. מפתח חינמי: aistudio.google.com/apikey",
@@ -18,16 +17,44 @@ const ERROR_TEXT: Record<string, string> = {
   busy: "השף עסוק כרגע. נסו שוב בעוד רגע.",
 };
 
-/** A floating "ask the chef" button on the recipe page that opens a chat about this recipe. */
-export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
-  const [open, setOpen] = useState(false);
+// Questions for the free-standing chef (no recipe open).
+const FREE_SUGGESTIONS = [
+  "איך מכינים ויניגרט בסיסי לסלט?",
+  "איך מכינים רוטב עגבניות מהיר?",
+  "מה אפשר לשים במקום שמנת מתוקה?",
+  "איך מכינים רוטב טחינה מושלם?",
+];
+
+/**
+ * "Ask the chef". With a `recipe` it answers about that recipe (and shows a floating button);
+ * without one it is a free-standing cooking assistant, opened from outside via `open`. Any answer
+ * can be turned into a new recipe with "save as a new recipe".
+ */
+export default function ChefAssistant({
+  recipe = null,
+  open: openProp,
+  onOpenChange,
+  showFab = true,
+  onSaveAsRecipe,
+}: {
+  recipe?: Recipe | null;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  showFab?: boolean;
+  /** Called with the chef's last answer when "save as a new recipe" is pressed. */
+  onSaveAsRecipe?: (answer: string) => void;
+}) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = openProp ?? internalOpen;
+  const setOpen = (value: boolean) => (onOpenChange ? onOpenChange(value) : setInternalOpen(value));
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   // Quick questions made from this recipe's own ingredients (no "make it parve" for a meat dish).
-  const suggestions = useMemo(() => chefSuggestions(recipe), [recipe]);
+  const suggestions = useMemo(() => (recipe ? chefSuggestions(recipe) : FREE_SUGGESTIONS), [recipe]);
+  const lastAnswer = [...turns].reverse().find((turn) => turn.role === "assistant")?.content ?? null;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -41,7 +68,7 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
     setInput("");
     setError(null);
     setBusy(true);
-    // The server gives up on Gemini after 8 seconds; if nothing at all comes back by 12 the
+    // The server gives up on Gemini after ~11 seconds; if nothing at all comes back by 14 the
     // "thinking" state ends here with a message instead of hanging.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
@@ -51,13 +78,15 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
         signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          recipe: {
-            title: recipe.title,
-            servings: recipe.servings,
-            ingredients: recipe.ingredients,
-            instructions: recipe.instructions,
-            tips: recipe.tips,
-          },
+          recipe: recipe
+            ? {
+                title: recipe.title,
+                servings: recipe.servings,
+                ingredients: recipe.ingredients,
+                instructions: recipe.instructions,
+                tips: recipe.tips,
+              }
+            : undefined,
           messages: next,
         }),
       });
@@ -85,15 +114,18 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label="שאל את השף"
-        className="fixed bottom-20 left-4 z-40 flex items-center gap-1.5 rounded-full bg-stone-800 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-stone-700 active:scale-95 dark:bg-amber-500 dark:hover:bg-amber-600"
-      >
-        <ChefHat className="h-4 w-4" />
-        שאל את השף
-      </button>
+      {showFab && !open && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="שאל את השף"
+          // Well above the bottom bar (and its safe area), so it never touches it.
+          className="fixed bottom-[calc(7.5rem+env(safe-area-inset-bottom))] left-3 z-40 flex items-center gap-1.5 rounded-full bg-stone-800 px-3.5 py-2 text-xs font-semibold text-white shadow-lg transition-colors hover:bg-stone-700 active:scale-95 dark:bg-amber-500 dark:hover:bg-amber-600"
+        >
+          <ChefHat className="h-4 w-4" />
+          שאל את השף
+        </button>
+      )}
 
       {open && (
         <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 sm:items-center">
@@ -104,7 +136,7 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
                   <ChefHat className="h-5 w-5 text-amber-500" />
                   שאל את השף
                 </h2>
-                <p className="truncate text-xs text-stone-400">על: {recipe.title}</p>
+                <p className="truncate text-xs text-stone-400">{recipe ? `על: ${recipe.title}` : "שף חופשי - כל שאלה על בישול"}</p>
               </div>
               <button type="button" onClick={() => setOpen(false)} aria-label="סגירה" className="rounded-full p-1.5 text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800">
                 <X className="h-5 w-5" />
@@ -114,7 +146,9 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
             <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
               {turns.length === 0 && (
                 <div className="flex flex-col gap-2">
-                  <p className="text-sm text-stone-600 dark:text-stone-300">שאלו כל דבר על המתכון הזה - תחליפים, כלי בישול אחרים, התאמות:</p>
+                  <p className="text-sm text-stone-600 dark:text-stone-300">
+                    {recipe ? "שאלו כל דבר על המתכון הזה - תחליפים, כלי בישול אחרים, התאמות:" : "התייעצו על רוטב, ויניגרט, תחליפים או טכניקה:"}
+                  </p>
                   {suggestions.map((suggestion) => (
                     <button
                       key={suggestion}
@@ -145,13 +179,29 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
               <div ref={endRef} />
             </div>
 
-            <form onSubmit={handleSubmit} className="flex shrink-0 gap-2 border-t border-amber-100 p-3 dark:border-amber-950/30">
+            {onSaveAsRecipe && lastAnswer && !busy && (
+              <div className="shrink-0 border-t border-amber-100 px-3 pt-2 dark:border-amber-950/30">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSaveAsRecipe(lastAnswer);
+                    setOpen(false);
+                  }}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
+                >
+                  <BookmarkPlus className="h-4 w-4" />
+                  שמור כמתכון חדש
+                </button>
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="flex shrink-0 gap-2 p-3">
               <input
                 type="text"
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 maxLength={500}
-                placeholder={suggestions[0] ?? "שאלו את השף על המתכון..."}
+                placeholder={suggestions[0] ?? "שאלו את השף..."}
                 aria-label="שאלה לשף"
                 className="min-w-0 flex-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200"
               />

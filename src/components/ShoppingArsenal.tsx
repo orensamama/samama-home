@@ -11,6 +11,9 @@ import WhatsAppImportModal, { type ImportItem, type ImportTarget } from "@/compo
 import { upsertShoppingItem } from "@/lib/shoppingActions";
 import { enqueue, isNetworkError, runWithQueueFallback } from "@/lib/syncQueue";
 import { SkeletonList } from "@/components/Skeleton";
+import QuickAddCategorySheet from "@/components/QuickAddCategorySheet";
+import { findExactProductMatch } from "@/lib/shoppingMatch";
+import { guessShoppingCategory } from "@/lib/shoppingCategoryGuess";
 import {
   groupByCategory,
   OTHER_CATEGORY,
@@ -42,6 +45,8 @@ export default function ShoppingArsenal() {
   const [renamingCategory, setRenamingCategory] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [showImport, setShowImport] = useState(false);
+  // A searched-for product that isn't in the arsenal yet: pick its category before it's added.
+  const [pendingAdd, setPendingAdd] = useState<string | null>(null);
 
   const activeShoppingItems = useMemo(
     () => optimisticShopping.rows.filter((item) => item.in_cart && !item.completed),
@@ -114,6 +119,39 @@ export default function ShoppingArsenal() {
       if (data) optimisticShopping.upsert(data);
       refetchShopping();
     }
+  }
+
+  // Adds a product that wasn't in the arsenal to the list under the chosen category, optionally
+  // keeping it in the arsenal for next time.
+  async function addNewItem(name: string, category: string, saveToArsenal: boolean) {
+    setPendingAdd(null);
+    setError(null);
+    let productId: string | null = null;
+    if (saveToArsenal) {
+      const { data, error: insertError } = await supabase.from("master_products").insert({ name, category }).select().single();
+      if (insertError || !data) {
+        if (insertError) logSupabaseError("הוספת מוצר חדש לארסנל", insertError);
+        setError(insertError ? friendlyErrorMessage(insertError) : "לא הצלחנו לשמור את המוצר בארסנל.");
+        return;
+      }
+      productId = data.id;
+    }
+    const { data, error: err } = await upsertShoppingItem({ productId, title: name, category, qty: 1 });
+    if (err) {
+      if (isNetworkError(err)) {
+        optimisticShopping.add({ id: `temp-${crypto.randomUUID()}`, product_id: productId, title: name, category, completed: false, in_cart: true, qty: 1 });
+        enqueue({ kind: "rpc", fn: "upsert_shopping_item", args: { p_product_id: productId, p_title: name, p_category: category, p_qty: 1, p_added_by: "Shared" } });
+      } else {
+        logSupabaseError("הוספת פריט חדש לרשימה", err);
+        setError(friendlyErrorMessage(err));
+        return;
+      }
+    } else if (data) {
+      optimisticShopping.upsert(data);
+    }
+    setSearch("");
+    if (saveToArsenal) await refetchProducts();
+    refetchShopping();
   }
 
   async function changeQty(item: ShoppingItem, delta: number) {
@@ -338,6 +376,17 @@ export default function ShoppingArsenal() {
         )}
       </div>
 
+      {search.trim() && !findExactProductMatch(products, search) && (
+        <button
+          type="button"
+          onClick={() => setPendingAdd(search.trim())}
+          className="flex min-h-[48px] items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-amber-400 bg-amber-50 px-3 py-2.5 text-sm font-semibold text-amber-800 transition-colors hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-300"
+        >
+          <Plus className="h-4 w-4" />
+          הוסף &quot;{search.trim()}&quot; לרשימה
+        </button>
+      )}
+
       <form
         onSubmit={handleAddProduct}
         className="flex flex-col gap-2 rounded-2xl border border-amber-100 bg-white p-3 shadow-sm dark:border-amber-950/30 dark:bg-stone-900"
@@ -510,6 +559,15 @@ export default function ShoppingArsenal() {
             )}
           </div>
         ))
+      )}
+
+      {pendingAdd && (
+        <QuickAddCategorySheet
+          name={pendingAdd}
+          suggestedCategory={guessShoppingCategory(pendingAdd, products)}
+          onConfirm={(category, save) => void addNewItem(pendingAdd, category, save)}
+          onClose={() => setPendingAdd(null)}
+        />
       )}
 
       {showImport && (

@@ -37,7 +37,7 @@ export default function RootLayout({
   return (
     <html lang="he" dir="rtl" className="h-full">
       <body className="flex h-full min-h-screen flex-col bg-[#fdf8f1] font-sans text-stone-900 antialiased dark:bg-[#1c1815] dark:text-stone-50">
-        <main className="flex-1 pb-20">{children}</main>
+        <main className="flex-1 pb-24">{children}</main>
         <BottomNav />
         <ServiceWorkerRegister />
         <OfflineSyncInit />

@@ -16,13 +16,11 @@ const MAX_RECIPE_CHARS = 8000;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 
-// Main model: GEMINI_MODEL if set, else gemini-2.5-flash. If that call fails for any reason other
-// than a bad key (model not found, overloaded, too slow, empty answer) the standard
-// gemini-1.5-flash is tried once. No other model names are used. The first attempt is capped so the
-// fallback always has time left, and the whole request has one deadline: it can never hang,
-// it always ends with an answer or a JSON error.
+// One model: GEMINI_MODEL if set, else gemini-2.5-flash, called on the stable v1 endpoint. No other
+// model names are used. The first try is capped so a retry (for a passing overload) has time left,
+// and the whole request has one deadline: it can never hang, it always ends with an answer or a
+// JSON error.
 const DEFAULT_MODEL = "gemini-2.5-flash";
-const FALLBACK_MODEL = "gemini-1.5-flash";
 const FIRST_ATTEMPT_MS = 7000;
 const DEADLINE_MS = 11000;
 
@@ -65,6 +63,15 @@ const SYSTEM = `אתה "השף" - עוזר קולינרי חם ומקצועי ב
 - אל תמציא מצרכים שאינם במתכון, אלא אם מדובר בהצעת תחליף מפורשת.
 - שאלה שלא קשורה לבישול או למתכון - אמור בנימוס שאתה כאן בשביל המתכון.`;
 
+// Free-standing chef (opened from the recipes screen, no recipe): a general cooking assistant.
+const SYSTEM_FREE = `אתה "השף" - עוזר קולינרי חם ומקצועי במטבח של משפחה ישראלית. ענה על שאלות בישול, רטבים, תחליפים, טכניקות וכלים.
+
+כללים:
+- ענה בעברית, קצר וממוקד (עד כ-150 מילים, אלא אם ביקשו פירוט), בלי הקדמות ובלי חזרה על השאלה.
+- כשרות: אל תציע לערבב בשר וחלב; כשצריך, הצע תחליפים פרווה.
+- כשמבקשים מתכון (רוטב, ויניגרט, מנה) - כתוב אותו כך, כדי שאפשר יהיה לשמור אותו: שורה ראשונה = שם המנה בלבד; אחריה "מצרכים:" ובכל שורה מצרך עם כמות; אחריה "אופן ההכנה:" עם שלבים ממוספרים. בלי אימוג'ים ובלי הקדמה.
+- שאלה שלא קשורה לבישול - אמור בנימוס שאתה כאן בשביל המטבח.`;
+
 function recipeContext(recipe: NonNullable<ChefRequest["recipe"]>): string {
   const lines = [
     `שם המתכון: ${recipe.title ?? ""}`,
@@ -106,7 +113,8 @@ async function handle(request: Request): Promise<Response> {
   } catch {
     return Response.json({ error: "bad_request" }, { status: 400 });
   }
-  if (!body.recipe || !Array.isArray(body.messages)) {
+  // `recipe` is optional: without it the chef is a free-standing cooking assistant.
+  if (!Array.isArray(body.messages)) {
     return Response.json({ error: "bad_request" }, { status: 400 });
   }
 
@@ -120,33 +128,34 @@ async function handle(request: Request): Promise<Response> {
     return Response.json({ error: "bad_request" }, { status: 400 });
   }
 
+  // The instructions (and the recipe) ride along in the first user message: that works on every API
+  // version, whereas a separate "systemInstruction" field is not accepted on the stable v1 endpoint.
+  const instructions = body.recipe ? `${SYSTEM}\n\n--- המתכון ---\n${recipeContext(body.recipe)}` : SYSTEM_FREE;
   // Gemini's roles are "user" / "model".
-  const contents = turns.map((turn) => ({ role: turn.role === "user" ? "user" : "model", parts: [{ text: turn.content }] }));
-  const systemInstruction = `${SYSTEM}
-
---- המתכון ---
-${recipeContext(body.recipe)}`;
+  const contents = turns.map((turn, index) => ({
+    role: turn.role === "user" ? "user" : "model",
+    parts: [{ text: index === 0 ? `${instructions}\n\n--- השאלה ---\n${turn.content}` : turn.content }],
+  }));
   const genAI = new GoogleGenerativeAI(apiKey);
 
   const started = Date.now();
-  const primary = process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const models = Array.from(new Set([primary, FALLBACK_MODEL]));
+  // One model (GEMINI_MODEL or gemini-2.5-flash); a second try of the same model only for a passing failure.
+  const modelName = process.env.GEMINI_MODEL || DEFAULT_MODEL;
   const attempts: { model: string; status?: number; message: string }[] = [];
 
-  for (const [index, modelName] of models.entries()) {
+  for (let index = 0; index < 2; index++) {
     const left = DEADLINE_MS - (Date.now() - started);
-    // Leave the fallback time to run: the first model gets at most FIRST_ATTEMPT_MS.
-    const remaining = index === 0 && models.length > 1 ? Math.min(left, FIRST_ATTEMPT_MS) : left;
+    // Leave a retry time to run: the first try gets at most FIRST_ATTEMPT_MS.
+    const remaining = index === 0 ? Math.min(left, FIRST_ATTEMPT_MS) : left;
     if (remaining < 1000) break;
     try {
       const model = genAI.getGenerativeModel(
         {
           model: modelName,
-          systemInstruction,
           generationConfig: { maxOutputTokens: 2048, temperature: 0.6 },
         },
-        // The SDK aborts the HTTP request itself after this long.
-        { timeout: remaining }
+        // The stable v1 endpoint (not v1beta); the SDK aborts the HTTP request itself after `timeout`.
+        { timeout: remaining, apiVersion: "v1" }
       );
       // Belt and braces: even if the SDK's own timeout didn't fire, never wait past the deadline.
       const result = await withTimeout(model.generateContent({ contents }), remaining, `timeout after ${Math.round(remaining / 1000)}s`);
@@ -166,8 +175,9 @@ ${recipeContext(body.recipe)}`;
       attempts.push({ model: modelName, status, message });
       console.log(error);
       console.error(`[chef] Gemini request failed (model ${modelName}, status ${status ?? "none"}):`, message);
-      // A bad key won't improve with another model; anything else (404, 429, 5xx, timeout) falls through to the fallback.
-      if (isKeyProblem(status, message)) break;
+      // Only a passing problem (overloaded 429/5xx, slow) is worth one more try; a bad key, a missing
+      // model (404) or a rejected request (400) will fail the same way again.
+      if (isKeyProblem(status, message) || status === 404 || status === 400) break;
     }
   }
 

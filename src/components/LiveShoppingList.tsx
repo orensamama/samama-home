@@ -6,13 +6,15 @@ import { useSupabaseTable } from "@/lib/useSupabaseTable";
 import { useOptimisticRows } from "@/lib/useOptimisticRows";
 import { upsertShoppingItem } from "@/lib/shoppingActions";
 import { enqueue, isNetworkError, runWithQueueFallback } from "@/lib/syncQueue";
-import { findExistingShoppingItem } from "@/lib/shoppingMatch";
+import { findExactProductMatch, findExistingShoppingItem } from "@/lib/shoppingMatch";
+import { guessShoppingCategory } from "@/lib/shoppingCategoryGuess";
+import QuickAddCategorySheet from "@/components/QuickAddCategorySheet";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
 import ErrorBanner from "@/components/ErrorBanner";
 import ShareMenu from "@/components/ShareMenu";
 import { SkeletonList } from "@/components/Skeleton";
-import { formatShoppingListForShare, groupByCategory, type ShoppingItem } from "@/lib/shoppingData";
+import { formatShoppingListForShare, groupByCategory, type MasterProduct, type ShoppingItem } from "@/lib/shoppingData";
 
 export default function LiveShoppingList() {
   const { rows: serverItems, loading, refetch } = useSupabaseTable<ShoppingItem>("shopping", "*", {
@@ -20,6 +22,13 @@ export default function LiveShoppingList() {
     ascending: true,
   });
   const optimistic = useOptimisticRows(serverItems);
+  // The same cached fetch as the arsenal: lets a typed name be recognised as a known product.
+  const { rows: products, refetch: refetchProducts } = useSupabaseTable<MasterProduct>("master_products", "*", {
+    column: "name",
+    ascending: true,
+  });
+  // A quick-added name that isn't a known product or on the list: choose its category first.
+  const [pendingTitle, setPendingTitle] = useState<string | null>(null);
   const items = optimistic.rows;
   const [newTitle, setNewTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -98,36 +107,71 @@ export default function LiveShoppingList() {
     event.preventDefault();
     const trimmed = newTitle.trim();
     if (!trimmed || submitting) return;
-    setSubmitting(true);
     setError(null);
 
-    // Merges into an existing active row with the same title instead of
+    // Already on the list, or a product we know (it brings its own category): add straight away.
+    // Anything new asks for a category first, instead of landing in "uncategorised".
+    const product = findExactProductMatch(products, trimmed);
+    const onList = findExistingShoppingItem(product, trimmed, optimistic.rows);
+    if (onList || product) {
+      await addItem({
+        title: product?.name ?? trimmed,
+        productId: product?.id ?? null,
+        category: product?.category ?? null,
+        qty: product && !onList ? product.default_qty : 1,
+      });
+      return;
+    }
+    setPendingTitle(trimmed);
+  }
+
+  // After the category sheet: optionally keep the product in the permanent list, then add it.
+  async function confirmNewItem(title: string, category: string, saveToArsenal: boolean) {
+    setPendingTitle(null);
+    let productId: string | null = null;
+    if (saveToArsenal) {
+      const { data, error: insertError } = await supabase.from("master_products").insert({ name: title, category }).select().single();
+      if (insertError || !data) {
+        if (insertError) logSupabaseError("הוספת מוצר חדש לארסנל", insertError);
+        setError(insertError ? friendlyErrorMessage(insertError) : "לא הצלחנו לשמור את המוצר בארסנל.");
+        return;
+      }
+      productId = data.id;
+      void refetchProducts();
+    }
+    await addItem({ title, productId, category, qty: 1 });
+  }
+
+  async function addItem(params: { title: string; productId: string | null; category: string | null; qty: number }) {
+    setSubmitting(true);
+    // Merges into an existing active row with the same title/product instead of
     // inserting a duplicate line (e.g. re-typing the same quick-add item).
-    const { data, error: err } = await upsertShoppingItem({ productId: null, title: trimmed, category: null, qty: 1 });
+    const { data, error: err } = await upsertShoppingItem(params);
     if (err) {
       if (isNetworkError(err)) {
         // Offline: apply a best-effort local guess now (merge into a
         // matching row if we can already see one, otherwise a new temp
         // row), and queue the *same* upsert RPC so the server does the
         // real, authoritative merge-or-create once back online.
-        const existing = findExistingShoppingItem(null, trimmed, optimistic.rows);
+        const matched = params.productId ? (products.find((product) => product.id === params.productId) ?? null) : null;
+        const existing = findExistingShoppingItem(matched, params.title, optimistic.rows);
         if (existing) {
-          optimistic.patch(existing.id, { qty: existing.qty + 1 });
+          optimistic.patch(existing.id, { qty: existing.qty + params.qty });
         } else {
           optimistic.add({
             id: `temp-${crypto.randomUUID()}`,
-            product_id: null,
-            title: trimmed,
-            category: null,
+            product_id: params.productId,
+            title: params.title,
+            category: params.category,
             completed: false,
             in_cart: true,
-            qty: 1,
+            qty: params.qty,
           });
         }
         enqueue({
           kind: "rpc",
           fn: "upsert_shopping_item",
-          args: { p_product_id: null, p_title: trimmed, p_category: null, p_qty: 1, p_added_by: "Shared" },
+          args: { p_product_id: params.productId, p_title: params.title, p_category: params.category, p_qty: params.qty, p_added_by: "Shared" },
         });
       } else {
         logSupabaseError("הוספת פריט קניות", err);
@@ -202,6 +246,15 @@ export default function LiveShoppingList() {
           <Plus className="h-5 w-5" />
         </button>
       </form>
+
+      {pendingTitle && (
+        <QuickAddCategorySheet
+          name={pendingTitle}
+          suggestedCategory={guessShoppingCategory(pendingTitle, products)}
+          onConfirm={(category, save) => void confirmNewItem(pendingTitle, category, save)}
+          onClose={() => setPendingTitle(null)}
+        />
+      )}
 
       {pending.length > 0 && (
         <div className="flex justify-end">

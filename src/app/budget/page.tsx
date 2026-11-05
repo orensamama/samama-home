@@ -752,7 +752,7 @@ export default function BudgetPage() {
         type="button"
         onClick={() => openNewExpense()}
         aria-label="הוספת הוצאה חדשה"
-        className="fixed bottom-20 left-4 z-40 flex items-center gap-1 rounded-full bg-amber-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-amber-600 active:scale-95"
+        className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] left-4 z-40 flex items-center gap-1 rounded-full bg-amber-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-amber-600 active:scale-95"
       >
         <Plus className="h-4 w-4" />
         הוצאה

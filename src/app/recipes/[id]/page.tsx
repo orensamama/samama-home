@@ -3,15 +3,28 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowRight, ChefHat, Minus, Pencil, Plus, Star, Trash2, TriangleAlert, Users } from "lucide-react";
+import { ArrowRight, ChefHat, Minus, Pencil, Plus, Share2, ShoppingCart, Sparkles, Star, Trash2, TriangleAlert, Users } from "lucide-react";
 import { SkeletonBlock } from "@/components/Skeleton";
 import ChefAssistant from "@/components/ChefAssistant";
+import HomeButton from "@/components/HomeButton";
+import RecipeShareModal from "@/components/RecipeShareModal";
+import RecipeShoppingExport from "@/components/RecipeShoppingExport";
 import RecipeForm from "@/components/RecipeForm";
 import VideoEmbed from "@/components/VideoEmbed";
 import { useRecipes } from "@/lib/useRecipes";
-import { addTag, deleteRecipe, patchRecipe, saveRecipeDraft } from "@/lib/recipeActions";
+import { addTag, deleteRecipe, insertRecipe, patchRecipe, saveRecipeDraft } from "@/lib/recipeActions";
 import { friendlyErrorMessage } from "@/lib/supabaseErrors";
-import { collectTags, scaleIngredientLine, type RecipeDraft } from "@/lib/recipeData";
+import {
+  collectTags,
+  draftFromText,
+  formatRecipeForShare,
+  leadingAmount,
+  reviewDraft,
+  scaleIngredientLine,
+  smartScaleIngredientLine,
+  type RecipeDraft,
+  type ReviewItem,
+} from "@/lib/recipeData";
 
 export default function RecipePage() {
   const { id } = useParams<{ id: string }>();
@@ -26,6 +39,18 @@ export default function RecipePage() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [servingsDraft, setServingsDraft] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  // Smart scaling: culinary rules (spices/liquids/oil scale gently) instead of one flat multiplier.
+  const [smart, setSmart] = useState(false);
+  // Scaling by one key ingredient ("2 kg of meat instead of 1"): overrides the portions counter.
+  const [customFactor, setCustomFactor] = useState<number | null>(null);
+  const [basePanelOpen, setBasePanelOpen] = useState(false);
+  const [baseIndex, setBaseIndex] = useState(0);
+  const [baseValue, setBaseValue] = useState("");
+  const [shareOpen, setShareOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  // A new recipe created from a chef answer ("save as a new recipe").
+  const [chefDraft, setChefDraft] = useState<{ draft: RecipeDraft; review: ReviewItem[] } | null>(null);
+  const [chefDraftError, setChefDraftError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!confirmingDelete) return;
@@ -53,8 +78,41 @@ export default function RecipePage() {
 
   const base = recipe.servings && recipe.servings > 0 ? recipe.servings : null;
   const current = portions ?? base;
-  const factor = base && current ? current / base : 1;
-  const scaledLines = recipe.ingredients.map((line) => scaleIngredientLine(line, factor));
+  const portionFactor = base && current ? current / base : 1;
+  const factor = customFactor ?? portionFactor;
+  const scaledLines = recipe.ingredients.map((line) =>
+    smart && factor !== 1 ? smartScaleIngredientLine(line, factor) : { ...scaleIngredientLine(line, factor), scaleClass: "base" as const }
+  );
+  const amountLines = recipe.ingredients
+    .map((line, index) => ({ line, index, amount: leadingAmount(line) }))
+    .filter((entry) => entry.amount !== null && !/:\s*$/.test(entry.line));
+  const shareText = formatRecipeForShare({
+    title: recipe.title,
+    servings: base ? Math.round((base * factor) * 10) / 10 : null,
+    ingredients: scaledLines.map((line) => line.text),
+    instructions: recipe.instructions,
+    tips: recipe.tips,
+    source_url: recipe.source_url,
+  });
+
+  function applyBaseIngredient() {
+    const entry = amountLines.find((candidate) => candidate.index === baseIndex) ?? amountLines[0];
+    const next = Number(baseValue.replace(",", "."));
+    if (!entry || !(next > 0) || !entry.amount) return;
+    setPortions(null);
+    setCustomFactor(next / entry.amount);
+    setBasePanelOpen(false);
+  }
+
+  async function handleSaveChefDraft(draft: RecipeDraft) {
+    setChefDraftError(null);
+    const { error } = await insertRecipe(draft);
+    if (error) {
+      setChefDraftError(friendlyErrorMessage(error));
+      return;
+    }
+    router.push("/recipes");
+  }
 
   async function handleCreateTag(name: string) {
     await addTag(name, tags.length + 1);
@@ -108,6 +166,7 @@ export default function RecipePage() {
         <Link href="/recipes" aria-label="חזרה לספר המתכונים" className="rounded-full p-2 text-stone-500 hover:bg-amber-50 dark:text-stone-400 dark:hover:bg-stone-800">
           <ArrowRight className="h-5 w-5" />
         </Link>
+        <HomeButton />
         <h1 className="min-w-0 flex-1 truncate text-lg font-bold text-stone-800 dark:text-stone-50">{recipe.title}</h1>
         <button
           type="button"
@@ -145,7 +204,7 @@ export default function RecipePage() {
         )}
       </header>
 
-      <div className="flex flex-col gap-4 p-4 pb-24">
+      <div className="flex flex-col gap-4 p-4 pb-44">
         {actionError && <p className="rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{actionError}</p>}
 
         {recipe.categories.length > 0 && (
@@ -161,6 +220,26 @@ export default function RecipePage() {
             ))}
           </div>
         )}
+
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setExportOpen(true)}
+            disabled={recipe.ingredients.length === 0}
+            className="flex min-h-[48px] items-center justify-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 transition-colors hover:bg-amber-100 disabled:opacity-40 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
+          >
+            <ShoppingCart className="h-4 w-4" />
+            ייצא לרשימת קניות
+          </button>
+          <button
+            type="button"
+            onClick={() => setShareOpen(true)}
+            className="flex min-h-[48px] items-center justify-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 transition-colors hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
+          >
+            <Share2 className="h-4 w-4" />
+            שתף / ייצא מתכון
+          </button>
+        </div>
 
         {!recipe.embed_url && (
           <>
@@ -184,7 +263,10 @@ export default function RecipePage() {
               <div className="flex items-center gap-1 rounded-full bg-amber-50 p-1 dark:bg-amber-950/30">
                 <button
                   type="button"
-                  onClick={() => setPortions(Math.max(1, current - 1))}
+                  onClick={() => {
+                    setCustomFactor(null);
+                    setPortions(Math.max(1, current - 1));
+                  }}
                   disabled={current <= 1}
                   aria-label="פחות מנות"
                   className="rounded-full bg-white p-1.5 text-amber-700 shadow-sm disabled:opacity-40 dark:bg-stone-800 dark:text-amber-400"
@@ -197,7 +279,10 @@ export default function RecipePage() {
                 </span>
                 <button
                   type="button"
-                  onClick={() => setPortions(current + 1)}
+                  onClick={() => {
+                    setCustomFactor(null);
+                    setPortions(current + 1);
+                  }}
                   aria-label="יותר מנות"
                   className="rounded-full bg-white p-1.5 text-amber-700 shadow-sm dark:bg-stone-800 dark:text-amber-400"
                 >
@@ -231,10 +316,87 @@ export default function RecipePage() {
             )}
           </div>
 
-          {base && factor !== 1 && (
+          {recipe.ingredients.length > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSmart((value) => !value)}
+                aria-pressed={smart}
+                title="תבלינים, מלח, נוזלים ושמן מוגדלים או מוקטנים בקצב מתון יותר מהבשר, הביצים והבצל"
+                className={"flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition-colors " + (smart ? "border-violet-500 bg-violet-500 text-white" : "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900/50 dark:bg-violet-950/30 dark:text-violet-300")}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                התאם כמויות חכם
+              </button>
+              {amountLines.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBaseIndex(amountLines[0].index);
+                    setBaseValue("");
+                    setBasePanelOpen((value) => !value);
+                  }}
+                  className="flex min-h-[40px] items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-1.5 text-xs font-semibold text-stone-600 transition-colors hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
+                >
+                  לפי רכיב מרכזי
+                </button>
+              )}
+            </div>
+          )}
+
+          {basePanelOpen && (
+            <div className="mb-3 flex flex-col gap-2 rounded-xl border border-stone-200 bg-stone-50 p-3 dark:border-stone-700 dark:bg-stone-800/50">
+              <p className="text-xs text-stone-600 dark:text-stone-300">בחרו רכיב והקלידו כמה ממנו יש לכם - שאר המצרכים יותאמו.</p>
+              <select
+                value={baseIndex}
+                onChange={(event) => setBaseIndex(Number(event.target.value))}
+                aria-label="הרכיב המרכזי"
+                className="w-full rounded-lg border border-stone-200 bg-white px-2 py-2 text-sm text-stone-700 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-200"
+              >
+                {amountLines.map((entry) => (
+                  <option key={entry.index} value={entry.index}>
+                    {entry.line}
+                  </option>
+                ))}
+              </select>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="any"
+                  value={baseValue}
+                  onChange={(event) => setBaseValue(event.target.value)}
+                  placeholder="הכמות החדשה (באותה יחידה)"
+                  aria-label="הכמות החדשה של הרכיב"
+                  className="min-w-0 flex-1 rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-200"
+                />
+                <button
+                  type="button"
+                  onClick={applyBaseIngredient}
+                  disabled={!(Number(baseValue.replace(",", ".")) > 0)}
+                  className="shrink-0 rounded-lg bg-amber-500 px-4 text-sm font-semibold text-white hover:bg-amber-600 disabled:opacity-40"
+                >
+                  התאם
+                </button>
+              </div>
+            </div>
+          )}
+
+          {factor !== 1 && (
             <p className="mb-2 rounded-lg bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
-              הכמויות הותאמו מ-{base} ל-{current} מנות.{" "}
-              <button type="button" onClick={() => setPortions(null)} className="font-semibold underline">
+              {customFactor !== null
+                ? "הכמויות הותאמו לפי הרכיב שבחרתם (x" + Math.round(customFactor * 100) / 100 + ")."
+                : "הכמויות הותאמו מ-" + base + " ל-" + current + " מנות."}
+              {smart && " תבלינים, מלח, נוזלים ושמן הותאמו בקצב מתון."}{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  setPortions(null);
+                  setCustomFactor(null);
+                }}
+                className="font-semibold underline"
+              >
                 חזרה למקור
               </button>
             </p>
@@ -248,6 +410,11 @@ export default function RecipePage() {
                 <li key={`${index}-${recipe.ingredients[index]}`} className="flex items-start gap-2 py-2 text-sm text-stone-800 dark:text-stone-100">
                   <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
                   <span className="flex-1">{line.text}</span>
+                  {smart && factor !== 1 && line.scaleClass !== "base" && (
+                    <span title="הותאם בקצב מתון (תבלין / נוזל / שמן)" className="mt-0.5 shrink-0 text-[10px] font-semibold text-violet-500">
+                      ≈
+                    </span>
+                  )}
                   {!line.scaled && (
                     <span title="כמות זו לא הותאמה אוטומטית" className="mt-0.5 shrink-0 text-amber-600">
                       <TriangleAlert className="h-3.5 w-3.5" aria-label="לא הותאם אוטומטית" />
@@ -303,7 +470,33 @@ export default function RecipePage() {
         )}
       </div>
 
-      <ChefAssistant recipe={recipe} />
+      <ChefAssistant
+        recipe={recipe}
+        onSaveAsRecipe={(answer) => {
+          const next = draftFromText(answer);
+          setChefDraft({ draft: next, review: reviewDraft(next) });
+        }}
+      />
+
+      {shareOpen && <RecipeShareModal title={recipe.title} text={shareText} onClose={() => setShareOpen(false)} />}
+      {exportOpen && (
+        <RecipeShoppingExport title={recipe.title} ingredients={scaledLines.map((line) => line.text)} onClose={() => setExportOpen(false)} />
+      )}
+
+      {chefDraft && (
+        <RecipeForm
+          heading="סקירת מתכון חדש"
+          initial={chefDraft.draft}
+          allTags={allTags}
+          error={chefDraftError}
+          notice="נוצר מתשובת השף - בדקו ותקנו לפני השמירה."
+          reviewItems={chefDraft.review}
+          onDismissError={() => setChefDraftError(null)}
+          onCreateTag={handleCreateTag}
+          onSave={handleSaveChefDraft}
+          onClose={() => setChefDraft(null)}
+        />
+      )}
 
       {editing && (
         <RecipeForm

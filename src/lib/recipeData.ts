@@ -104,7 +104,7 @@ export function formatQuantity(value: number): string {
   let best = steps[0];
   for (const step of steps) if (Math.abs(value - step[0]) < Math.abs(value - best[0])) best = step;
   // Smaller than a quarter: a decimal is clearer than a made-up fraction.
-  return Math.abs(value - best[0]) <= 0.07 ? best[1] : String(Math.round(value * 10) / 10);
+  return Math.abs(value - best[0]) <= 0.1 ? best[1] : String(Math.round(value * 10) / 10);
 }
 
 // "כוס וחצי", "כף ורבע": a unit plus a spoken fraction -- we can't rewrite those safely.
@@ -1144,4 +1144,101 @@ export function reviewDraft(draft: Pick<RecipeDraft, "title" | "ingredients" | "
   // Strongest first, and not an endless list.
   items.sort((a, b) => Number(b.strong) - Number(a.strong));
   return items.slice(0, 14).map((item, index) => ({ ...item, id: index }));
+}
+
+// ---------------------------------------------------------------------------
+// Smart (culinary) scaling and sharing text
+// ---------------------------------------------------------------------------
+
+/**
+ * How an ingredient behaves when a recipe is made bigger or smaller. Meat, eggs, onions, flour,
+ * crumbs... scale one-to-one; strong flavours, liquids and the oil for the pan don't (double the
+ * salt and the dish is too salty, double the water and the sauce is too thin).
+ */
+export type ScaleClass = "base" | "spice" | "liquid" | "leaven" | "fat";
+
+/** The share of the batch change each class follows: 1 = proportional, lower = gentler. */
+export const SCALE_EXPONENT: Record<ScaleClass, number> = { base: 1, spice: 0.75, liquid: 0.9, leaven: 0.9, fat: 0.85 };
+
+const SPICE_WORDS = [
+  "מלח", "פלפל שחור", "פלפל לבן", "פלפל אנגלי", "פלפל חריף", "כמון", "פפריקה", "כורכום", "קינמון", "אורגנו", "טימין", "רוזמרין", "זעתר", "הל", "קארי", "סומאק",
+  "בהרט", "צ'ילי", "אבקת שום", "אבקת בצל", "אבקת מרק", "עלי דפנה", "אגוז מוסקט", "וניל", "תבלין", "שום", "ג'ינג'ר", "מרווה", "קימל", "זנגביל", "ציפורן", "אניס",
+];
+const LEAVEN_WORDS = ["אבקת אפייה", "אבקת אפיה", "סודה לשתייה", "סודה לשתיה", "שמרים", "שמרי"];
+const LIQUID_WORDS = ["מים", "חלב", "מרק", "ציר", "יין", "רוטב", "רסק", "קטשופ", "שמנת", "מיץ", "חומץ", "סויה", "ברנדי", "בירה", "קוניאק", "משקה", "מיונז", "טחינה גולמית"];
+const FAT_WORDS = ["שמן", "שמן זית", "ספריי"];
+
+function hasPhrase(text: string, phrase: string): boolean {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("(?<![\\p{L}])[בלמהוכש]?" + escaped + "(?![\\p{L}])", "u").test(text);
+}
+
+export function ingredientScaleClass(line: string): ScaleClass {
+  const text = normalizeText(line);
+  // Longest, most specific groups first ("אבקת שום" is a spice, not the vegetable; "מים" in "מי ורדים" is irrelevant).
+  if (LEAVEN_WORDS.some((word) => hasPhrase(text, normalizeText(word)))) return "leaven";
+  if (SPICE_WORDS.some((word) => hasPhrase(text, normalizeText(word)))) return "spice";
+  if (FAT_WORDS.some((word) => hasPhrase(text, normalizeText(word)))) return "fat";
+  if (LIQUID_WORDS.some((word) => hasPhrase(text, normalizeText(word)))) return "liquid";
+  return "base";
+}
+
+/** The first amount written in the line (2, 1/2, 1.5, חצי...), or null. */
+export function leadingAmount(line: string): number | null {
+  for (const match of line.matchAll(QUANTITY_TOKEN)) {
+    const value = parseQuantity(match as RegExpMatchArray);
+    if (value !== null && value > 0) return value;
+  }
+  return null;
+}
+
+/** Scales one ingredient line with the culinary rules above instead of one flat multiplier. */
+export function smartScaleIngredientLine(line: string, factor: number): { text: string; scaled: boolean; scaleClass: ScaleClass } {
+  const scaleClass = ingredientScaleClass(line);
+  const effective = Number.isFinite(factor) && factor > 0 ? Math.pow(factor, SCALE_EXPONENT[scaleClass]) : factor;
+  return { ...scaleIngredientLine(line, effective), scaleClass };
+}
+
+/** A recipe as plain text for WhatsApp / e-mail / clipboard (WhatsApp's own *bold* for headings). */
+export function formatRecipeForShare(recipe: {
+  title: string;
+  servings?: number | null;
+  ingredients: string[];
+  instructions: string;
+  tips: string;
+  source_url?: string | null;
+}): string {
+  const lines: string[] = [`🍽️ *${recipe.title}*`];
+  if (recipe.servings) lines.push(`מנות: ${recipe.servings}`);
+  if (recipe.ingredients.length > 0) {
+    lines.push("", "*מצרכים:*", ...recipe.ingredients.map((line) => `- ${line}`));
+  }
+  if (recipe.instructions.trim()) lines.push("", "*אופן ההכנה:*", recipe.instructions.trim());
+  if (recipe.tips.trim()) lines.push("", "*טיפים:*", recipe.tips.trim());
+  if (recipe.source_url) lines.push("", recipe.source_url);
+  lines.push("", "נשלח מ-Samama Home");
+  return lines.join("\n");
+}
+
+/**
+ * A shopping-list entry from an ingredient line: "2 כוסות קמח" -> name "קמח" (amount "2 כוסות"),
+ * "3 ביצים" -> name "ביצים" with a count of 3. Used by "export to the shopping list".
+ */
+export function ingredientToShoppingItem(line: string): { name: string; amountText: string | null; count: number } {
+  let text = stripEmoji(line).replace(/\([^)]*\)/g, " ").split(",")[0].trim();
+  const unit = "(?:כוסות|כוס|כפות|כף|כפיות|כפית|גרם|גר'|ק\"ג|ק״ג|קילו|קילוגרם|ליטר|מ\"ל|מ״ל|חבילות|חבילה|קופסאות|קופסה|שקיות|שקית|צנצנות|צנצנת|שיני|שן|חופן|קורט|פרוסות|פרוסה|יחידות|יחידה)";
+  const leading = new RegExp("^[\\s\\-•*]*((?:\\d+(?:[.,]\\d+)?(?:\\s*[-–]\\s*\\d+(?:[.,]\\d+)?)?|\\d+\\s*/\\s*\\d+|[½¼¾⅓⅔]|חצי|רבע|שליש)\\s*)?(" + unit + "\\s+)?(?:של\\s+)?", "u");
+  const match = text.match(leading);
+  let amount: string | null = null;
+  let count = 1;
+  if (match && (match[1] || match[2])) {
+    const number = (match[1] ?? "").trim();
+    const measure = (match[2] ?? "").trim();
+    text = text.slice(match[0].length).trim();
+    if (measure) amount = `${number} ${measure}`.trim();
+    else if (/^\d+$/.test(number)) count = Math.min(20, Math.max(1, Number(number)));
+    else if (number) amount = number;
+  }
+  const name = text.replace(/^[\s\-•*]+/, "").replace(/\s{2,}/g, " ").trim() || stripEmoji(line).trim();
+  return { name, amountText: amount, count };
 }
