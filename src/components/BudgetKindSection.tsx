@@ -369,6 +369,9 @@ function BudgetKindSection({
   const [open, setOpen] = useState(defaultOpen);
   const [newGroup, setNewGroup] = useState("");
   const [newGroupFirst, setNewGroupFirst] = useState("");
+  // Income sources are personal ("משכורת אורית", "בונוס", "הכנסה חד פעמית"): add one without entering edit mode.
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickName, setQuickName] = useState("");
   const actions: SectionActions = {
     onAddExpense,
     onFilterCategory,
@@ -458,6 +461,46 @@ function BudgetKindSection({
                 actions={actions}
               />
             ))
+          )}
+
+          {kind === "income" && !manage && (
+            <div className="mx-2 mt-3 border-t border-dashed border-stone-200 pt-3 dark:border-stone-700">
+              {quickOpen ? (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const name = quickName.trim();
+                    if (!name) return;
+                    onAddCategory(kind, groups[0] ?? "הכנסות", name);
+                    setQuickName("");
+                    setQuickOpen(false);
+                  }}
+                  className="flex gap-1.5"
+                >
+                  <input
+                    type="text"
+                    value={quickName}
+                    autoFocus
+                    onChange={(event) => setQuickName(event.target.value)}
+                    placeholder="שם הסעיף: משכורת אורית, הכנסה חד פעמית, הכנסה משתנה..."
+                    className="min-w-0 flex-1 rounded-lg border border-emerald-300 bg-white px-2 py-1.5 text-sm text-stone-700 outline-none focus:border-emerald-500 dark:border-emerald-800 dark:bg-stone-950 dark:text-stone-200"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!quickName.trim()}
+                    className="shrink-0 rounded-lg bg-emerald-500 px-3 text-sm font-semibold text-white hover:bg-emerald-600 disabled:opacity-50"
+                  >
+                    הוסף
+                  </button>
+                </form>
+              ) : (
+                <button type="button" onClick={() => setQuickOpen(true)} className="flex items-center gap-1 text-xs font-medium text-emerald-700 hover:underline dark:text-emerald-400">
+                  <Plus className="h-3.5 w-3.5" />
+                  סעיף הכנסה חדש
+                  <span className="font-normal text-stone-400">(עריכה ומחיקה: &quot;עריכת תקציב&quot;)</span>
+                </button>
+              )}
+            </div>
           )}
 
           {manage && (

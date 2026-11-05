@@ -22,7 +22,7 @@ export async function saveExpense(params: {
   editingId: string | null;
   categories: BudgetCategory[];
   merchants: MerchantCategory[];
-}): Promise<{ error: PostgrestError | null; mappingSaved: boolean }> {
+}): Promise<{ error: PostgrestError | null; mappingSaved: boolean; flowSkipped: boolean }> {
   const { values, editingId, categories, merchants } = params;
   const store = values.store.trim();
   const category = categories.find((candidate) => candidate.id === values.category_id) ?? null;
@@ -39,14 +39,24 @@ export async function saveExpense(params: {
     store: store || null,
     category_id: category?.id ?? null,
     receipt_url: values.receipt_url || null,
+    flow: values.flow, // recurring / variable (migration 0024)
   };
 
-  const { error } = editingId
-    ? await supabase.from("expenses").update(payload).eq("id", editingId)
-    : await supabase.from("expenses").insert(payload);
+  const write = (row: Record<string, unknown>) =>
+    editingId ? supabase.from("expenses").update(row).eq("id", editingId) : supabase.from("expenses").insert(row);
+
+  let { error } = await write(payload);
+  // The table doesn't have the `flow` column yet (SQL not run): still save the transaction, without it.
+  let flowSkipped = false;
+  if (error && (error.code === "PGRST204" || error.code === "42703") && /flow/i.test(error.message)) {
+    const { flow: _flow, ...withoutFlow } = payload;
+    void _flow;
+    ({ error } = await write(withoutFlow));
+    flowSkipped = true;
+  }
   if (error) {
     logSupabaseError("שמירת הוצאה", error);
-    return { error, mappingSaved: false };
+    return { error, mappingSaved: false, flowSkipped: false };
   }
 
   let mappingSaved = false;
@@ -59,7 +69,27 @@ export async function saveExpense(params: {
       else mappingSaved = true;
     }
   }
-  return { error: null, mappingSaved };
+  return { error: null, mappingSaved, flowSkipped };
+}
+
+/**
+ * Adds a custom category (e.g. a new income source such as "משכורת אורית" or "הכנסה חד פעמית") and
+ * returns it, so the form can select it at once. Goes at the end of its kind's list.
+ */
+export async function createBudgetCategory(params: {
+  name: string;
+  kind: BudgetCategory["kind"];
+  groupName: string;
+  existing: BudgetCategory[];
+}): Promise<{ category: BudgetCategory | null; error: PostgrestError | null }> {
+  const maxOrder = params.existing.reduce((max, category) => Math.max(max, category.sort_order), 0);
+  const { data, error } = await supabase
+    .from("budget_categories")
+    .insert({ name: params.name.trim(), kind: params.kind, group_name: params.groupName, monthly_budget: 0, sort_order: maxOrder + 10 })
+    .select("*")
+    .single();
+  if (error) logSupabaseError("הוספת סעיף", error);
+  return { category: (data as BudgetCategory | null) ?? null, error };
 }
 
 // --- store -> category mappings (table: merchant_categories) -------------

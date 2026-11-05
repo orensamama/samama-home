@@ -21,6 +21,24 @@ export type BudgetExpense = {
   category_id: string | null;
   receipt_url: string | null;
   date: string; // ISO date, e.g. "2026-10-22"
+  /** Recurring ("קבוע") or variable / temporary ("משתנה"); null = implied by the category (migration 0024). */
+  flow?: FlowKind | null;
+};
+
+export type FlowKind = "fixed" | "variable";
+
+/** What a transaction is unless chosen otherwise: variable categories -> variable, the rest recurring. */
+export function defaultFlowFor(kind: BudgetKind | undefined): FlowKind {
+  return kind === "variable" || kind === undefined ? "variable" : "fixed";
+}
+
+export function flowOf(expense: Pick<BudgetExpense, "flow">, category: BudgetCategory | undefined): FlowKind {
+  return expense.flow === "fixed" || expense.flow === "variable" ? expense.flow : defaultFlowFor(category?.kind);
+}
+
+export const FLOW_LABEL: Record<"expense" | "income", Record<FlowKind, string>> = {
+  expense: { fixed: "הוצאה קבועה", variable: "הוצאה משתנה / חד-פעמית" },
+  income: { fixed: "הכנסה קבועה", variable: "הכנסה משתנה / זמנית" },
 };
 
 export type MerchantCategory = {
@@ -33,8 +51,8 @@ export type MerchantCategory = {
 };
 
 // Shared query shapes, so every screen using them shares one cached fetch.
-export const EXPENSE_SELECT =
-  "id, title, amount, amount_pending, notes, store, category_id, receipt_url, date:expense_date";
+// "*" (not a column list) so a table without the newer `flow` column still loads.
+export const EXPENSE_SELECT = "*,date:expense_date";
 export const EXPENSE_ORDER = { column: "expense_date", ascending: false } as const;
 export const CATEGORY_ORDER = { column: "sort_order", ascending: true } as const;
 
@@ -119,9 +137,15 @@ function overrideFor(overrides: BudgetOverrides | undefined, categoryId: string,
 export type BudgetSummary = {
   statuses: Map<string, CategoryStatus>;
   uncategorizedSpent: number;
+  /** All income for the month: recurring (received, or expected) plus one-off. */
   income: number;
+  /** Recurring income: what was received under the "קבוע" flow, or the expected amount when nothing was. */
+  incomeFixed: number;
+  /** Variable / temporary income: one-off amounts logged as "משתנה". Never carried to the next month. */
+  incomeVariable: number;
   fixedCommitted: number;
   sinkingCommitted: number;
+  /** Spending logged under the variable flow (including uncategorised). */
   variableSpent: number;
   variableBudget: number;
   totalSpent: number;
@@ -136,9 +160,13 @@ const amountOf = (expense: BudgetExpense) => (expense.amount_pending ? 0 : Numbe
  *  1. the latest per-month override set for that month or an earlier one;
  *  2. its base `monthly_budget` when that's above zero;
  *  3. for fixed expenses and income that never had a target: what was actually
- *     logged in the most recent earlier month -- so recurring items don't reset
- *     to 0 on the 1st of a new month.
+ *     logged under the FIXED flow in the most recent earlier month -- so recurring
+ *     items don't reset to 0 on the 1st of a new month (one-off amounts never carry).
  * Editing a month writes an override, which later months inherit.
+ *
+ * Every transaction also has a flow, fixed ("קבוע") or variable ("משתנה / זמני"), stored on the
+ * transaction or, when it has none, implied by its category (variable categories -> variable,
+ * everything else -> fixed). The month's totals are grouped by that flow.
  */
 export function computeBudgetSummary(
   categories: BudgetCategory[],
@@ -146,28 +174,32 @@ export function computeBudgetSummary(
   monthKey: string,
   overrides?: BudgetOverrides
 ): BudgetSummary {
-  const spentByCategory = new Map<string, number>();
-  // category -> month -> total, to find "what was logged last month" for recurring items
-  const monthlyTotals = new Map<string, Map<string, number>>();
-  const categoryIds = new Set(categories.map((category) => category.id));
-  let uncategorizedSpent = 0;
-  let totalSpent = 0;
+  const spentFixedByCategory = new Map<string, number>();
+  const spentVariableByCategory = new Map<string, number>();
+  // category -> month -> total of FIXED-flow amounts, to find "what was logged last month" for recurring items
+  const monthlyFixedTotals = new Map<string, Map<string, number>>();
+  const categoryById = new Map(categories.map((category) => [category.id, category]));
+  let uncategorizedFixed = 0;
+  let uncategorizedVariable = 0;
 
   for (const expense of expenses) {
     const amount = amountOf(expense);
     const month = expense.date.slice(0, 7);
-    if (expense.category_id && categoryIds.has(expense.category_id) && amount > 0 && month < monthKey) {
-      const months = monthlyTotals.get(expense.category_id) ?? new Map<string, number>();
+    const category = expense.category_id ? categoryById.get(expense.category_id) : undefined;
+    const flow = flowOf(expense, category);
+    if (category && flow === "fixed" && amount > 0 && month < monthKey) {
+      const months = monthlyFixedTotals.get(category.id) ?? new Map<string, number>();
       months.set(month, (months.get(month) ?? 0) + amount);
-      monthlyTotals.set(expense.category_id, months);
+      monthlyFixedTotals.set(category.id, months);
     }
     if (!expense.date.startsWith(monthKey)) continue;
-    if (expense.category_id && categoryIds.has(expense.category_id)) {
-      spentByCategory.set(expense.category_id, (spentByCategory.get(expense.category_id) ?? 0) + amount);
-    } else {
-      uncategorizedSpent += amount;
-    }
+    if (category) {
+      const bucket = flow === "fixed" ? spentFixedByCategory : spentVariableByCategory;
+      bucket.set(category.id, (bucket.get(category.id) ?? 0) + amount);
+    } else if (flow === "fixed") uncategorizedFixed += amount;
+    else uncategorizedVariable += amount;
   }
+  const uncategorizedSpent = uncategorizedFixed + uncategorizedVariable;
 
   function targetFor(category: BudgetCategory): number {
     if (category.is_hidden) return 0;
@@ -176,7 +208,7 @@ export function computeBudgetSummary(
     const base = Number(category.monthly_budget) || 0;
     if (base > 0) return base;
     if (category.kind === "income" || category.kind === "fixed") {
-      const months = monthlyTotals.get(category.id);
+      const months = monthlyFixedTotals.get(category.id);
       if (months && months.size > 0) {
         const latest = Array.from(months.keys()).sort().pop() as string;
         return Math.round((months.get(latest) ?? 0) * 100) / 100;
@@ -186,38 +218,57 @@ export function computeBudgetSummary(
   }
 
   const statuses = new Map<string, CategoryStatus>();
-  let income = 0;
+  let incomeFixed = 0;
+  let incomeVariable = 0;
   let fixedCommitted = 0;
   let sinkingCommitted = 0;
   let variableSpent = 0;
   let variableBudget = 0;
+  let totalSpent = 0;
 
   for (const category of categories) {
-    const spent = spentByCategory.get(category.id) ?? 0;
+    const spentFixed = spentFixedByCategory.get(category.id) ?? 0;
+    const spentVariable = spentVariableByCategory.get(category.id) ?? 0;
+    const spent = spentFixed + spentVariable;
     const budget = targetFor(category);
-    const committed =
-      category.kind === "income" ? (spent > 0 ? spent : budget) : category.kind === "variable" ? spent : Math.max(spent, budget);
-    statuses.set(category.id, { category, spent, budget, ratio: budget > 0 ? spent / budget : 0, committed });
+    let committed: number;
 
     if (category.kind === "income") {
-      income += committed;
+      // Recurring: what came in, or the expected amount while nothing has. One-off income adds on top.
+      const recurring = spentFixed > 0 ? spentFixed : budget;
+      incomeFixed += recurring;
+      incomeVariable += spentVariable;
+      committed = recurring + spentVariable;
     } else {
       totalSpent += spent;
-      if (category.kind === "fixed") fixedCommitted += committed;
-      else if (category.kind === "sinking") sinkingCommitted += committed;
-      else {
-        variableSpent += spent;
+      if (category.kind === "fixed") {
+        const recurring = Math.max(spentFixed, budget);
+        fixedCommitted += recurring;
+        variableSpent += spentVariable; // a one-off extra on a recurring item
+        committed = recurring + spentVariable;
+      } else if (category.kind === "sinking") {
+        committed = Math.max(spent, budget);
+        sinkingCommitted += committed;
+      } else {
+        fixedCommitted += spentFixed; // a recurring payment logged under an everyday category
+        variableSpent += spentVariable;
         variableBudget += budget;
+        committed = spent;
       }
     }
+    statuses.set(category.id, { category, spent, budget, ratio: budget > 0 ? spent / budget : 0, committed });
   }
   totalSpent += uncategorizedSpent;
-  variableSpent += uncategorizedSpent;
+  fixedCommitted += uncategorizedFixed;
+  variableSpent += uncategorizedVariable;
+  const income = incomeFixed + incomeVariable;
 
   return {
     statuses,
     uncategorizedSpent,
     income,
+    incomeFixed,
+    incomeVariable,
     fixedCommitted,
     sinkingCommitted,
     variableSpent,
@@ -446,6 +497,8 @@ export type ExpenseFormValues = {
   date: string;
   notes: string;
   receipt_url: string;
+  /** Recurring or variable / temporary (see FlowKind). */
+  flow: FlowKind;
   /** Re-learn store -> category after the user overrode a remembered one. */
   remember_mapping: boolean;
 };

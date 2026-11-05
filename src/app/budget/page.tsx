@@ -13,7 +13,7 @@ import SetupSqlButton from "@/components/SetupSqlButton";
 import ExpenseFormModal from "@/components/ExpenseFormModal";
 import StoreMappingsPanel from "@/components/StoreMappingsPanel";
 import { useBudgetData } from "@/lib/useBudget";
-import { deleteMerchant, saveExpense, updateMerchant, upsertMerchant } from "@/lib/budgetActions";
+import { createBudgetCategory, deleteMerchant, saveExpense, updateMerchant, upsertMerchant } from "@/lib/budgetActions";
 import { useOptimisticRows } from "@/lib/useOptimisticRows";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
@@ -28,6 +28,7 @@ import {
   monthOffsetFromDate,
   normalizeStoreKey,
   progressTone,
+  flowOf,
   type BudgetExpense,
   type BudgetKind,
   type ExpenseFormValues,
@@ -158,7 +159,7 @@ export default function BudgetPage() {
 
   async function handleExpenseSubmit(values: ExpenseFormValues) {
     setFormError(null);
-    const { error, mappingSaved } = await saveExpense({
+    const { error, mappingSaved, flowSkipped } = await saveExpense({
       values,
       editingId: editingExpense?.id ?? null,
       categories: categories.rows,
@@ -169,12 +170,29 @@ export default function BudgetPage() {
       return;
     }
     if (mappingSaved) refetchMerchants();
+    if (flowSkipped) {
+      // The transaction is saved, but the recurring/variable choice needs the new column.
+      setPageError("התנועה נשמרה, אבל סיווג קבוע/משתנה לא נשמר כי חסרה עמודה במסד הנתונים. הריצו פעם אחת את ה-SQL שמתחת ב-Supabase.");
+      setShowFavoritesSql(true);
+    }
 
     // Jump to the month the expense belongs to so it's visible right away.
     setMonthOffset(monthOffsetFromDate(values.date));
     await refetchExpenses();
     setShowForm(false);
     setEditingExpense(null);
+  }
+
+  // A custom income source ("משכורת אורית", "הכנסה חד פעמית") created from the form's income mode.
+  async function handleCreateIncomeCategory(name: string) {
+    const group = categories.rows.find((category) => category.kind === "income")?.group_name ?? "הכנסות";
+    const { category, error } = await createBudgetCategory({ name, kind: "income", groupName: group, existing: serverCategories });
+    if (error || !category) {
+      setFormError(error ? friendlyErrorMessage(error) : "לא הצלחנו להוסיף את הסעיף.");
+      return null;
+    }
+    await refetchCategories();
+    return category;
   }
 
   async function handleDeleteExpense(id: string) {
@@ -394,10 +412,11 @@ export default function BudgetPage() {
     [refetchMerchants, reportMerchantError]
   );
 
-  const stat = (label: string, value: number) => (
+  const stat = (label: string, value: number, sub?: string) => (
     <div className="px-2 text-center">
       <p className="text-[11px] text-stone-400 dark:text-stone-500">{label}</p>
       <p className="text-sm font-semibold tabular-nums text-stone-800 dark:text-stone-100">{formatCurrency(value)}</p>
+      {sub && <p className="text-[10px] text-stone-400 dark:text-stone-500">{sub}</p>}
     </div>
   );
 
@@ -470,7 +489,11 @@ export default function BudgetPage() {
           )}
 
           <div className="mt-3 grid grid-cols-3 divide-x divide-stone-100 border-t border-stone-100 pt-3 dark:divide-stone-800 dark:border-stone-800">
-            {stat("הכנסות", summary.income)}
+            {stat(
+              "הכנסות",
+              summary.income,
+              summary.incomeVariable > 0 ? `קבועות ${formatCurrency(summary.incomeFixed)} · משתנות ${formatCurrency(summary.incomeVariable)}` : undefined
+            )}
             {stat("קבוע וחיסכון", summary.fixedCommitted + summary.sinkingCommitted)}
             {stat("משתנות", summary.variableSpent)}
           </div>
@@ -669,6 +692,11 @@ export default function BudgetPage() {
                         </span>
                         <span className="block truncate text-[11px] text-stone-400 dark:text-stone-500">
                           {category ? category.name : "ללא קטגוריה"} · {formatDate(expense.date)}
+                          {expense.flow && (
+                            <span className="me-1.5 ms-1.5 rounded-full bg-stone-100 px-1.5 py-px text-[10px] font-medium text-stone-500 dark:bg-stone-800 dark:text-stone-400">
+                              {flowOf(expense, category ?? undefined) === "fixed" ? "קבוע" : "משתנה / זמני"}
+                            </span>
+                          )}
                         </span>
                       </span>
                       {expense.receipt_url && (
@@ -745,6 +773,7 @@ export default function BudgetPage() {
             setFormError(null);
           }}
           onSubmit={handleExpenseSubmit}
+          onCreateCategory={handleCreateIncomeCategory}
           onDelete={editingExpense ? () => handleDeleteExpense(editingExpense.id) : undefined}
         />
       )}

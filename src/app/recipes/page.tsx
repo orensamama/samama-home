@@ -21,10 +21,12 @@ import {
   findDuplicate,
   mergeIntoExisting,
   replaceWithNewer,
+  reviewDraft,
   searchRecipes,
   tagColorClasses,
   type DuplicateMatch,
   type RecipeDraft,
+  type ReviewItem,
 } from "@/lib/recipeData";
 
 type Modal = "add" | "form" | "import" | "tags" | "cleanup" | null;
@@ -43,6 +45,7 @@ export default function RecipesPage() {
   const [modal, setModal] = useState<Modal>(null);
   const [draft, setDraft] = useState<RecipeDraft>(emptyDraft());
   const [notice, setNotice] = useState<string | null>(null);
+  const [reviewItems, setReviewItems] = useState<ReviewItem[] | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [dupPrompt, setDupPrompt] = useState<{ draft: RecipeDraft; match: DuplicateMatch } | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -112,9 +115,11 @@ export default function RecipesPage() {
     [tags.length, refetchTags]
   );
 
-  function openForm(next: RecipeDraft, nextNotice: string | null = null) {
+  // `review` = a freshly pasted/imported recipe: the form opens as a review stage (nothing saved yet).
+  function openForm(next: RecipeDraft, nextNotice: string | null = null, review: ReviewItem[] | null = null) {
     setDraft(next);
     setNotice(nextNotice);
+    setReviewItems(review);
     setFormError(null);
     setModal("form");
   }
@@ -439,7 +444,7 @@ export default function RecipesPage() {
 
       {modal === "add" && (
         <RecipeAddModal
-          onDraft={(next, nextNotice) => openForm(next, nextNotice)}
+          onDraft={(next, nextNotice) => openForm(next, nextNotice, reviewDraft(next))}
           onImportChat={() => setModal("import")}
           onManual={() => openForm(emptyDraft())}
           onClose={() => setModal(null)}
@@ -448,11 +453,12 @@ export default function RecipesPage() {
 
       {modal === "form" && (
         <RecipeForm
-          heading="מתכון חדש"
+          heading={reviewItems ? "סקירת מתכון חדש" : "מתכון חדש"}
           initial={draft}
           allTags={allTags}
           error={formError}
           notice={notice}
+          reviewItems={reviewItems}
           onDismissError={() => setFormError(null)}
           onCreateTag={handleCreateTag}
           onSave={handleSave}

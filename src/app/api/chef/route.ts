@@ -16,12 +16,12 @@ const MAX_RECIPE_CHARS = 8000;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 
-// The model is called directly (no model listing, no loops): GEMINI_MODEL if set, else the
-// requested gemini-1.5-flash. Only if Google answers "model not found" (404, which comes back
-// at once) is ONE lighter fallback tried -- all attempts share a single deadline, so the
-// request can never hang: it always ends with an answer or a JSON error.
-const DEFAULT_MODEL = "gemini-1.5-flash";
-const FALLBACK_MODEL = "gemini-2.5-flash-lite";
+// Only the two official models are used: GEMINI_MODEL if set, else gemini-1.5-flash. If Google
+// answers "model not found" (404, which comes back at once) the OTHER official one is tried --
+// never any other name. All attempts share a single deadline, so the request can never hang:
+// it always ends with an answer or a JSON error.
+const OFFICIAL_MODELS = ["gemini-1.5-flash", "gemini-2.0-flash"];
+const DEFAULT_MODEL = OFFICIAL_MODELS[0];
 const DEADLINE_MS = 8000;
 
 /** HTTP status of a Gemini SDK error ("[404 Not Found] ..." when the status field isn't set). */
@@ -127,7 +127,8 @@ ${recipeContext(body.recipe)}`;
   const genAI = new GoogleGenerativeAI(apiKey);
 
   const started = Date.now();
-  const models = Array.from(new Set([process.env.GEMINI_MODEL || DEFAULT_MODEL, FALLBACK_MODEL]));
+  const primary = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  const models = [primary, ...OFFICIAL_MODELS.filter((name) => name !== primary)].slice(0, 2);
   const attempts: { model: string; status?: number; message: string }[] = [];
 
   for (const modelName of models) {

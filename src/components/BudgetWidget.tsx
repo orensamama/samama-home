@@ -6,7 +6,7 @@ import { Plus, Wallet } from "lucide-react";
 import ExpenseFormModal from "@/components/ExpenseFormModal";
 import { SkeletonBlock } from "@/components/Skeleton";
 import { useBudgetData } from "@/lib/useBudget";
-import { saveExpense } from "@/lib/budgetActions";
+import { createBudgetCategory, saveExpense } from "@/lib/budgetActions";
 import { friendlyErrorMessage } from "@/lib/supabaseErrors";
 import { formatCurrency } from "@/lib/familyData";
 import {
@@ -58,6 +58,18 @@ export default function BudgetWidget() {
     merchants.refetch();
     await expenses.refetch();
     setShowForm(false);
+  }
+
+  // A custom income source added from the form's income mode.
+  async function handleCreateIncomeCategory(name: string) {
+    const group = categories.rows.find((category) => category.kind === "income")?.group_name ?? "הכנסות";
+    const { category, error } = await createBudgetCategory({ name, kind: "income", groupName: group, existing: categories.rows });
+    if (error || !category) {
+      setFormError(error ? friendlyErrorMessage(error) : "לא הצלחנו להוסיף את הסעיף.");
+      return null;
+    }
+    await categories.refetch();
+    return category;
   }
 
   return (
@@ -132,6 +144,7 @@ export default function BudgetWidget() {
             setFormError(null);
           }}
           onSubmit={handleSubmit}
+          onCreateCategory={handleCreateIncomeCategory}
         />
       )}
     </>

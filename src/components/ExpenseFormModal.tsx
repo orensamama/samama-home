@@ -7,6 +7,9 @@ import CategorySelect from "@/components/CategorySelect";
 import { supabase } from "@/lib/supabaseClient";
 import { categoryNameForText, parseSpokenExpense } from "@/lib/spokenExpense";
 import {
+  FLOW_LABEL,
+  defaultFlowFor,
+  flowOf,
   formatReceiptItems,
   normalizeStoreKey,
   parseReceiptText,
@@ -86,6 +89,7 @@ export default function ExpenseFormModal({
   onClose,
   onSubmit,
   onDelete,
+  onCreateCategory,
 }: {
   editingExpense: BudgetExpense | null | undefined;
   defaultCategoryId?: string | null;
@@ -98,6 +102,8 @@ export default function ExpenseFormModal({
   onSubmit: (values: ExpenseFormValues) => Promise<void>;
   /** When given (editing), a delete button is shown in the form footer. */
   onDelete?: () => Promise<void> | void;
+  /** Lets the user add a custom income source right from the form; resolves to the new category. */
+  onCreateCategory?: (name: string) => Promise<BudgetCategory | null>;
 }) {
   const [values, setValues] = useState<ExpenseFormValues>(() =>
     editingExpense
@@ -109,6 +115,7 @@ export default function ExpenseFormModal({
           date: editingExpense.date,
           notes: editingExpense.notes ?? "",
           receipt_url: editingExpense.receipt_url ?? "",
+          flow: flowOf(editingExpense, categories.find((category) => category.id === editingExpense.category_id)),
           remember_mapping: true,
         }
       : {
@@ -119,9 +126,15 @@ export default function ExpenseFormModal({
           date: defaultDate,
           notes: "",
           receipt_url: "",
+          flow: defaultFlowFor(categories.find((category) => category.id === defaultCategoryId)?.kind),
           remember_mapping: true,
         }
   );
+  // Recurring or variable/temporary: follows the chosen category until the user picks one.
+  const [flowTouched, setFlowTouched] = useState(Boolean(editingExpense?.flow));
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [creatingCategory, setCreatingCategory] = useState(false);
   // Expense or income: income goes to an income category and is added to the
   // month's income. Starts from the category being edited / opened from.
   const [mode, setMode] = useState<"expense" | "income">(() => {
@@ -199,6 +212,21 @@ export default function ExpenseFormModal({
   }
   const effectiveCategoryId = categoryTouched ? values.category_id : (suggestedCategory?.id ?? values.category_id);
   const chosenCategory = categories.find((category) => category.id === effectiveCategoryId) ?? null;
+  const effectiveFlow = flowTouched ? values.flow : defaultFlowFor(chosenCategory?.kind ?? (isIncome ? "income" : undefined));
+
+  async function handleCreateCategory() {
+    const name = newCategoryName.trim();
+    if (!name || !onCreateCategory || creatingCategory) return;
+    setCreatingCategory(true);
+    const created = await onCreateCategory(name);
+    setCreatingCategory(false);
+    if (created) {
+      setCategoryTouched(true);
+      setValues((v) => ({ ...v, category_id: created.id }));
+      setNewCategoryName("");
+      setAddingCategory(false);
+    }
+  }
   const showingSuggestion = !categoryTouched && suggestedCategory !== null;
   // The store is recognised, but the user chose something else: offer to learn it.
   const offerRemember =
@@ -315,7 +343,7 @@ export default function ExpenseFormModal({
     event.preventDefault();
     if (!isValid || submitting) return;
     setSubmitting(true);
-    await onSubmit({ ...values, category_id: effectiveCategoryId });
+    await onSubmit({ ...values, category_id: effectiveCategoryId, flow: effectiveFlow });
     setSubmitting(false);
   }
 
@@ -673,6 +701,40 @@ export default function ExpenseFormModal({
                 }}
                 className={fieldClass}
               />
+              {isIncome && onCreateCategory && (
+                <div className="mt-1.5">
+                  {addingCategory ? (
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={newCategoryName}
+                        autoFocus
+                        onChange={(event) => setNewCategoryName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault(); // don't submit the surrounding form
+                            void handleCreateCategory();
+                          }
+                        }}
+                        placeholder="שם הסעיף: משכורת אורית, הכנסה חד פעמית..."
+                        className="min-w-0 flex-1 rounded-lg border border-dashed border-emerald-300 bg-transparent px-2.5 py-1.5 text-xs text-stone-700 outline-none focus:border-emerald-500 dark:text-stone-200"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleCreateCategory()}
+                        disabled={!newCategoryName.trim() || creatingCategory}
+                        className="shrink-0 rounded-lg bg-emerald-500 px-3 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-50"
+                      >
+                        {creatingCategory ? "..." : "הוסף"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setAddingCategory(true)} className="text-xs font-medium text-emerald-700 hover:underline dark:text-emerald-400">
+                      + סעיף הכנסה חדש
+                    </button>
+                  )}
+                </div>
+              )}
               {showingSuggestion && (
                 <p className="mt-1 flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
                   <Sparkles className="h-3 w-3" />
@@ -693,6 +755,36 @@ export default function ExpenseFormModal({
                   </span>
                 </label>
               )}
+            </div>
+
+            <div role="radiogroup" aria-label="סוג התנועה לפי תזרים">
+              <p className="mb-1.5 text-xs font-medium text-stone-500 dark:text-stone-400">
+                {isIncome ? "סוג ההכנסה" : "סוג ההוצאה"}
+              </p>
+              <div className="grid grid-cols-2 gap-1 rounded-xl bg-stone-100 p-1 dark:bg-stone-800">
+                {(["fixed", "variable"] as const).map((flow) => (
+                  <button
+                    key={flow}
+                    type="button"
+                    role="radio"
+                    aria-checked={effectiveFlow === flow}
+                    onClick={() => {
+                      setFlowTouched(true);
+                      setValues((v) => ({ ...v, flow }));
+                    }}
+                    className={`rounded-lg px-2 py-2 text-xs font-semibold transition-colors ${
+                      effectiveFlow === flow
+                        ? "bg-white text-amber-700 shadow-sm dark:bg-stone-900 dark:text-amber-400"
+                        : "text-stone-500 dark:text-stone-400"
+                    }`}
+                  >
+                    {FLOW_LABEL[isIncome ? "income" : "expense"][flow]}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-[11px] text-stone-400 dark:text-stone-500">
+                {effectiveFlow === "fixed" ? "חוזרת מדי חודש - נכללת בתכנון קדימה." : "חד-פעמית או משתנה - נספרת רק בחודש הזה."}
+              </p>
             </div>
 
             <div>

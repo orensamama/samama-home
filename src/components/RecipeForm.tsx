@@ -5,7 +5,8 @@ import { Camera, Image as ImageIcon, X } from "lucide-react";
 import ErrorBanner from "@/components/ErrorBanner";
 import RecipeTagPicker from "@/components/RecipeTagPicker";
 import { uploadRecipeImage } from "@/lib/recipeActions";
-import { embedFromUrl, type RecipeDraft } from "@/lib/recipeData";
+import { TriangleAlert } from "lucide-react";
+import { embedFromUrl, type RecipeDraft, type ReviewItem } from "@/lib/recipeData";
 
 const fieldClass =
   "w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-amber-900/50 dark:bg-stone-950 dark:text-stone-200";
@@ -21,6 +22,7 @@ export default function RecipeForm({
   allTags,
   error,
   notice,
+  reviewItems,
   onDismissError,
   onCreateTag,
   onSave,
@@ -32,6 +34,11 @@ export default function RecipeForm({
   error?: string | null;
   /** A calm heads-up shown above the fields (e.g. "the page's text couldn't be read"). */
   notice?: string | null;
+  /**
+   * Review stage for a freshly pasted/imported recipe: nothing is saved yet, and the lines the
+   * parser wasn't sure about are listed here (null = a normal edit, no review banner).
+   */
+  reviewItems?: ReviewItem[] | null;
   onDismissError: () => void;
   onCreateTag?: (name: string) => void;
   onSave: (draft: RecipeDraft) => Promise<void>;
@@ -42,6 +49,26 @@ export default function RecipeForm({
   const [servings, setServings] = useState(initial.servings === null ? "" : String(initial.servings));
   const [ingredients, setIngredients] = useState(initial.ingredients.join("\n"));
   const [instructions, setInstructions] = useState(initial.instructions);
+  const [pendingReview, setPendingReview] = useState<ReviewItem[]>(reviewItems ?? []);
+
+  // Moves one flagged line to the other field (and off the list).
+  function moveLine(item: ReviewItem) {
+    const removeLine = (text: string) => {
+      const lines = text.split("\n");
+      const index = lines.findIndex((line) => line.trim() === item.line.trim());
+      if (index >= 0) lines.splice(index, 1);
+      return lines.join("\n");
+    };
+    const clean = item.line.replace(/^\s*[-•*·–—]+\s*/, "").trim();
+    if (item.suggestMove === "toInstructions") {
+      setIngredients((current) => removeLine(current));
+      setInstructions((current) => (current.trim() ? `${clean}\n${current}` : clean));
+    } else if (item.suggestMove === "toIngredients") {
+      setInstructions((current) => removeLine(current));
+      setIngredients((current) => (current.trim() ? `${current}\n${clean}` : clean));
+    }
+    setPendingReview((current) => current.filter((entry) => entry.id !== item.id));
+  }
   const [tips, setTips] = useState(initial.tips);
   const [description, setDescription] = useState(initial.description);
   const [sourceUrl, setSourceUrl] = useState(initial.source_url ?? "");
@@ -106,6 +133,58 @@ export default function RecipeForm({
         <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
           <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
             {error && <ErrorBanner message={error} onDismiss={onDismissError} />}
+            {reviewItems && (
+              <div
+                className={`flex flex-col gap-2 rounded-2xl border-2 p-3 ${
+                  pendingReview.some((item) => item.strong)
+                    ? "border-amber-400 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/20"
+                    : "border-emerald-200 bg-emerald-50 dark:border-emerald-900/50 dark:bg-emerald-950/20"
+                }`}
+              >
+                <p className="text-sm font-bold text-stone-800 dark:text-stone-100">
+                  המתכון עדיין לא נשמר - בדקו שהמצרכים ואופן ההכנה בשדות הנכונים
+                </p>
+                {pendingReview.length === 0 ? (
+                  <p className="text-xs text-emerald-700 dark:text-emerald-400">✓ הניתוח לא מצא שורות חשודות. עדיין כדאי לעבור על השדות לפני השמירה.</p>
+                ) : (
+                  <>
+                    <p className="flex items-center gap-1 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                      <TriangleAlert className="h-4 w-4" />
+                      {pendingReview.length} דברים לבדיקה
+                    </p>
+                    <ul className="flex max-h-60 flex-col gap-1.5 overflow-y-auto">
+                      {pendingReview.map((item) => (
+                        <li key={item.id} className="rounded-xl bg-white/80 p-2 text-xs dark:bg-stone-900/60">
+                          {item.line && <p className="font-medium text-stone-800 dark:text-stone-100">&quot;{item.line}&quot;</p>}
+                          <p className={item.strong ? "text-amber-800 dark:text-amber-300" : "text-stone-500 dark:text-stone-400"}>
+                            {item.field === "ingredients" ? "במצרכים: " : item.field === "instructions" ? "בהכנה: " : ""}
+                            {item.reason}
+                          </p>
+                          <div className="mt-1 flex gap-2">
+                            {item.suggestMove && (
+                              <button
+                                type="button"
+                                onClick={() => moveLine(item)}
+                                className="rounded-lg bg-amber-500 px-2.5 py-1 font-semibold text-white hover:bg-amber-600"
+                              >
+                                {item.suggestMove === "toInstructions" ? "העבר להוראות ההכנה" : "העבר למצרכים"}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setPendingReview((current) => current.filter((entry) => entry.id !== item.id))}
+                              className="rounded-lg border border-stone-200 px-2.5 py-1 font-medium text-stone-600 hover:bg-stone-50 dark:border-stone-700 dark:text-stone-300"
+                            >
+                              זה בסדר
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            )}
             {notice && (
               <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">{notice}</p>
             )}

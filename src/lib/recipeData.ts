@@ -182,7 +182,7 @@ const MEASURE_WORD =
 
 // Cooking actions (imperative / present plural): a line with one of these is a step, not an ingredient.
 const COOKING_VERB =
-  /(?:^|[\s(])(?:מחממ|מערבב|מוסיפ|אופ(?:ים|ה|ו|ות)\b|מטגנ|מבשל|חותכ|קוצצ|מניח|מכס(?:ים|ה)|מוציא|מקפל|שופכ|מסנ|מגיש|מתבל|מורח|מעביר|מכניס|מקציפ|ממתינ|מרתיח|מצנן|מקרר|ממלא|מפזר|מועך|מגלגל|הופכ|מצפ|מחבר|מערב(?:ל|ים)|הוסיפו|ערבבו|בשלו|חממו|אפו|טגנו|חתכו|קצצו|הניחו|כסו|הוציאו|קפלו|שפכו|הגישו|תבלו|מרחו|העבירו|הכניסו|הקציפו|חכו|המתינו|צננו|קררו|מלאו|פזרו|סננו|מעכו|גלגלו|הפכו|לשו|לשים|ללוש)|(?:דקות|תנור|על אש|לאחר מכן|בשלב הבא)/u;
+  /(?:^|[\s(])(?:מחממ|מערבב|מוסיפ|אופ(?:ים|ה|ו|ות)\b|מטגנ|מבשל|חותכ|קוצצ|מניח|מכס(?:ים|ה)|מוציא|מקפל|שופכ|מסנ|מגיש|מתבל|מורח|מעביר|מכניס|מקציפ|ממתינ|מרתיח|מצנן|מקרר|ממלא|מפזר|מועך|מגלגל|הופכ|מצפ|מחבר|תוסיפ|תערבב|תחממ|תאפ|תטגנ|תבשל|תסנ|שימו|קחו|מערב(?:ל|ים)|הוסיפו|ערבבו|בשלו|חממו|אפו|טגנו|חתכו|קצצו|הניחו|כסו|הוציאו|קפלו|שפכו|הגישו|תבלו|מרחו|העבירו|הכניסו|הקציפו|חכו|המתינו|צננו|קררו|מלאו|פזרו|סננו|מעכו|גלגלו|הפכו|לשו|לשים|ללוש)|(?:דקות|תנור|על אש|לאחר מכן|בשלב הבא)/u;
 
 const SERVINGS_PATTERNS: RegExp[] = [
   /(?:(?<![\p{L}])ל|עבור\s|כמות[:\s]+|מנות[:\s]+)[-\s]?(\d{1,2})(?!\d)\s*(?:מנות|סועדים|אנשים|יחידות|עוגיות|פרוסות)/u,
@@ -202,12 +202,45 @@ function stripListMarker(line: string): string {
 const isNumberedStep = (line: string) => /^\s*(?:שלב\s*)?\d{1,2}\s*[.):]\s+\S/.test(stripEmoji(line)) || /^\s*שלב\s*\d/.test(line);
 const hasBullet = (line: string) => /^\s*[-•*·–—▪●◦✔✓]/.test(line) || /^\s*[\p{Extended_Pictographic}]/u.test(line);
 
+// Common ingredient names. A short line that is just one of these (with a word or two of
+// description: "בצל קצוץ", "פלפל שחור") is an ingredient even with no amount written.
+const INGREDIENT_LONG = [
+  "קמח", "סוכר", "שמן", "ביצה", "ביצים", "חלב", "חמאה", "שמנת", "גבינה", "יוגורט", "בצל", "בצלים", "שום", "עגבני", "גזר", "תפוח", "תפוחי", "בטטה",
+  "פלפל", "מלפפון", "חציל", "קישוא", "כרוב", "חסה", "לימון", "פטרוזיליה", "כוסברה", "שמיר", "נענע", "בזיליקום", "אורז", "פסטה", "בורגול",
+  "קוסקוס", "בשר", "עוף", "פרגית", "דג", "שמרים", "אבקת", "וניל", "שוקולד", "דבש", "טחינה", "חומוס", "עדשים", "שעועית", "אפונה", "תירס", "פטריות",
+  "זיתים", "יין", "רסק", "מיונז", "קטשופ", "חרדל", "סילאן", "קקאו", "קינמון", "כמון", "פפריקה", "כורכום", "אגוזים", "שקדים", "פיסטוק", "צימוקים",
+  "מלח", "מים", "פירורי", "גרגירי", "ג'ינג'ר", "סודה", "קורנפלור", "עמילן", "בצק",
+];
+const INGREDIENT_NOUN_LONG = new RegExp("(?<![\\p{L}])[בלמהוכש]?(?:" + INGREDIENT_LONG.join("|") + ")", "u");
+const INGREDIENT_NOUN_SHORT = /(?<![\p{L}])[בלמהוכש]?(?:מלח|מים|שום|שמן|דג|יין|לימון)(?![\p{L}])/u;
+
+/** A short, verb-free line that names an ingredient ("בצל קצוץ", "פלפל שחור"). */
+function isBareIngredientName(text: string): boolean {
+  const words = text.trim().split(/\s+/);
+  if (text.length > 38 || words.length > 5 || /[.!?]/.test(text) || COOKING_VERB.test(text)) return false;
+  return INGREDIENT_NOUN_LONG.test(text) || INGREDIENT_NOUN_SHORT.test(text);
+}
+
+// Boilerplate and noise that rides along with an Instagram / Facebook caption.
+const NOISE_LINE = /^(?:follow|עקבו|לייק|שתפו|תייגו|תיוג|שמרו|לינק בביו|link in bio|save this|comment|תגובות)(?![\p{L}])/iu;
+
+/** Hashtags and @mentions out; a line that was only those, a count, a creator name or a call to follow, dropped. */
+function scrubLine(line: string): string {
+  const cleaned = line.replace(/#[\p{L}\p{N}_]+/gu, " ").replace(/@[\w.]+/g, " ").replace(/[ \t]{2,}/g, " ").trim();
+  if (!cleaned) return "";
+  if (NOISE_LINE.test(cleaned)) return "";
+  if (isMetricSegment(cleaned)) return "";
+  // A lone Latin-letters name ("Rubi Michael") is the creator, not part of the recipe.
+  if (/^(?:[A-Z][a-z]+)(?:\s+[A-Z][a-z]+){1,2}$/.test(cleaned)) return "";
+  return cleaned === line.trim() ? line : cleaned;
+}
+
 /** A bullet / quantity / measure line with no cooking action: an ingredient, whichever section it was under. */
 function isStrictIngredient(line: string): boolean {
   const text = stripEmoji(line);
   if (!text || text.length > 70 || isNumberedStep(line) || COOKING_VERB.test(text)) return false;
   if (/:\s*$/.test(text)) return false; // a sub-heading
-  return hasBullet(line) || QUANTITY_LINE.test(text) || MEASURE_WORD.test(text);
+  return hasBullet(line) || QUANTITY_LINE.test(text) || MEASURE_WORD.test(text) || isBareIngredientName(text);
 }
 
 /** A numbered or action line: instructions, even if it was written under the ingredients. */
@@ -288,7 +321,7 @@ function joinText(lines: string[]): string {
 }
 
 export function parseRecipeText(rawText: string): ParsedRecipeText {
-  const lines = rawText.split(/\r?\n/).map(cleanLine);
+  const lines = rawText.split(/\r?\n/).map(cleanLine).map(scrubLine);
   let section: "pre" | "ingredients" | "preparation" | "tips" = "pre";
   let sawHeading = false;
   const pre: string[] = [];
@@ -316,7 +349,13 @@ export function parseRecipeText(rawText: string): ParsedRecipeText {
   let title = "";
   const introParts: string[] = [];
   let preLines = pre.filter((line) => line.trim());
-  if (preLines.length > 0 && !/^https?:\/\//i.test(preLines[0].trim()) && !isStrictIngredient(preLines[0])) {
+  // (The first line is a title unless it plainly starts like an ingredient: a dish name may well
+  // contain an ingredient word or start with an emoji.)
+  const firstLooksLikeIngredient = (line: string) => {
+    const text = stripEmoji(line);
+    return /^\s*[-•*·–—]/.test(line) || QUANTITY_LINE.test(text) || (MEASURE_WORD.test(text) && text.length <= 40 && !COOKING_VERB.test(text));
+  };
+  if (preLines.length > 0 && !/^https?:\/\//i.test(preLines[0].trim()) && !firstLooksLikeIngredient(preLines[0])) {
     const split = splitTitle(preLines[0]);
     title = split.title;
     if (split.extra) introParts.push(split.extra);
@@ -1044,4 +1083,65 @@ export function recipeToDraft(recipe: Recipe): RecipeDraft {
     original_text: recipe.original_text,
     is_favorite: recipe.is_favorite,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Review before saving: lines the parser can't be sure about
+// ---------------------------------------------------------------------------
+
+export type ReviewItem = {
+  id: number;
+  field: "ingredients" | "instructions" | "general";
+  line: string;
+  reason: string;
+  /** Moving the line to the other field is probably right. */
+  suggestMove: "toInstructions" | "toIngredients" | null;
+  /** Likely wrong (vs. just unclear). */
+  strong: boolean;
+};
+
+/**
+ * Looks over a recipe draft the way a person would and lists what deserves a second look: an
+ * ingredient that reads like a method step (or the reverse), a line with both an amount and a
+ * cooking action, an ingredient without any amount, missing sections. Pure; used by the
+ * review stage shown before a pasted recipe is saved.
+ */
+export function reviewDraft(draft: Pick<RecipeDraft, "title" | "ingredients" | "instructions">): ReviewItem[] {
+  const items: Omit<ReviewItem, "id">[] = [];
+
+  if (!draft.title.trim() || draft.title === "מתכון ללא שם") {
+    items.push({ field: "general", line: "", reason: "לא זוהה שם למתכון - כדאי להוסיף אחד", suggestMove: null, strong: false });
+  }
+  if (draft.ingredients.length === 0 && draft.instructions.trim()) {
+    items.push({ field: "general", line: "", reason: "לא זוהו מצרכים - בדקו אם מצרכים הוכנסו בטעות לשדה ההכנה", suggestMove: null, strong: true });
+  }
+  if (draft.instructions.trim() === "" && draft.ingredients.length > 0) {
+    items.push({ field: "general", line: "", reason: "לא נמצא אופן הכנה", suggestMove: null, strong: false });
+  }
+
+  for (const line of draft.ingredients) {
+    const text = stripEmoji(line);
+    if (!text.trim()) continue;
+    const hasVerb = COOKING_VERB.test(text);
+    const hasAmount = QUANTITY_LINE.test(text) || MEASURE_WORD.test(text);
+    if (isStepLike(line) || (hasVerb && !hasAmount && text.split(/\s+/).length >= 3)) {
+      items.push({ field: "ingredients", line, reason: "נראית כהוראת הכנה ולא כמצרך", suggestMove: "toInstructions", strong: true });
+    } else if (hasVerb && hasAmount) {
+      items.push({ field: "ingredients", line, reason: "טקסט מעורב: יש גם כמות וגם פעולת בישול", suggestMove: null, strong: false });
+    } else if (text.length > 90) {
+      items.push({ field: "ingredients", line, reason: "שורה ארוכה מאוד - אולי כמה מצרכים או הוראה", suggestMove: null, strong: false });
+    } else if (!hasAmount && !isBareIngredientName(text) && text.split(/\s+/).length >= 2 && !/:\s*$/.test(text)) {
+      items.push({ field: "ingredients", line, reason: "לא זוהתה כמות או יחידת מידה", suggestMove: null, strong: false });
+    }
+  }
+
+  for (const line of draft.instructions.split("\n")) {
+    if (line.trim() && isStrictIngredient(line) && (hasBullet(line) || QUANTITY_LINE.test(stripEmoji(line)))) {
+      items.push({ field: "instructions", line, reason: "נראית כמצרך ולא כהוראה", suggestMove: "toIngredients", strong: true });
+    }
+  }
+
+  // Strongest first, and not an endless list.
+  items.sort((a, b) => Number(b.strong) - Number(a.strong));
+  return items.slice(0, 14).map((item, index) => ({ ...item, id: index }));
 }
