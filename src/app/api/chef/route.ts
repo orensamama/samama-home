@@ -1,5 +1,4 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { rankFlashModels, type ListedModel } from "@/lib/geminiModels";
 
 // "Ask the Chef": answers questions about ONE recipe (substitutions, other appliances,
 // making it dairy-free...) with Google Gemini (free tier). The API key stays on the server
@@ -9,7 +8,7 @@ import { rankFlashModels, type ListedModel } from "@/lib/geminiModels";
 // a short history, a bounded recipe, and a per-visitor rate limit -- enough to stop a
 // stray script from running up the bill, not a substitute for real authentication.
 
-export const maxDuration = 60;
+export const maxDuration = 15;
 
 const MAX_QUESTION_CHARS = 600;
 const MAX_HISTORY = 8;
@@ -17,32 +16,13 @@ const MAX_RECIPE_CHARS = 8000;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 
-// Google retires model names (1.5 and 2.0 Flash are gone from many accounts), so the model is
-// not hard-coded: GEMINI_MODEL (if set) is tried first, then the newest Flash models this key
-// can actually use (asked from the API once an hour), then a few well-known names.
-const STATIC_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite"];
-const MODEL_LIST_TTL_MS = 60 * 60 * 1000;
-const MAX_MODEL_ATTEMPTS = 5;
-
-let modelCache: { at: number; ids: string[] } | null = null;
-
-async function listUsableModels(apiKey: string): Promise<string[]> {
-  if (modelCache && Date.now() - modelCache.at < MODEL_LIST_TTL_MS) return modelCache.ids;
-  try {
-    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {
-      headers: { "x-goog-api-key": apiKey },
-    });
-    if (!response.ok) throw new Error(`ListModels ${response.status}: ${(await response.text()).slice(0, 300)}`);
-    const data = (await response.json()) as { models?: ListedModel[] };
-    const ids = rankFlashModels(data.models ?? []);
-    modelCache = { at: Date.now(), ids };
-    console.log("[chef] usable Gemini flash models:", ids.join(", ") || "(none listed)");
-    return ids;
-  } catch (error) {
-    console.error("[chef] could not list Gemini models:", error);
-    return [];
-  }
-}
+// The model is called directly (no model listing, no loops): GEMINI_MODEL if set, else the
+// requested gemini-1.5-flash. Only if Google answers "model not found" (404, which comes back
+// at once) is ONE lighter fallback tried -- all attempts share a single deadline, so the
+// request can never hang: it always ends with an answer or a JSON error.
+const DEFAULT_MODEL = "gemini-1.5-flash";
+const FALLBACK_MODEL = "gemini-2.5-flash-lite";
+const DEADLINE_MS = 8000;
 
 /** HTTP status of a Gemini SDK error ("[404 Not Found] ..." when the status field isn't set). */
 function statusOf(error: unknown): number | undefined {
@@ -96,7 +76,18 @@ function recipeContext(recipe: NonNullable<ChefRequest["recipe"]>): string {
   return lines.filter(Boolean).join("\n").slice(0, MAX_RECIPE_CHARS);
 }
 
+/** Whatever goes wrong inside, the caller gets valid JSON back -- never a hung or empty response. */
 export async function POST(request: Request) {
+  try {
+    return await handle(request);
+  } catch (error) {
+    console.log(error);
+    console.error("[chef] unexpected error:", error);
+    return Response.json({ error: "failed", detail: String((error as Error | null)?.message ?? error).slice(0, 300) }, { status: 500 });
+  }
+}
+
+async function handle(request: Request): Promise<Response> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return Response.json({ error: "no_key" }, { status: 503 });
@@ -135,20 +126,25 @@ export async function POST(request: Request) {
 ${recipeContext(body.recipe)}`;
   const genAI = new GoogleGenerativeAI(apiKey);
 
-  const candidates = Array.from(
-    new Set([...(process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL] : []), ...(await listUsableModels(apiKey)).slice(0, 4), ...STATIC_MODELS])
-  ).slice(0, MAX_MODEL_ATTEMPTS);
-
+  const started = Date.now();
+  const models = Array.from(new Set([process.env.GEMINI_MODEL || DEFAULT_MODEL, FALLBACK_MODEL]));
   const attempts: { model: string; status?: number; message: string }[] = [];
-  for (const modelName of candidates) {
+
+  for (const modelName of models) {
+    const remaining = DEADLINE_MS - (Date.now() - started);
+    if (remaining < 1000) break;
     try {
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        systemInstruction,
-        // Newer Gemini models "think" before answering and that counts against this limit: leave room.
-        generationConfig: { maxOutputTokens: 4096, temperature: 0.6 },
-      });
-      const result = await model.generateContent({ contents });
+      const model = genAI.getGenerativeModel(
+        {
+          model: modelName,
+          systemInstruction,
+          generationConfig: { maxOutputTokens: 1024, temperature: 0.6 },
+        },
+        // The SDK aborts the HTTP request itself after this long.
+        { timeout: remaining }
+      );
+      // Belt and braces: even if the SDK's own timeout didn't fire, never wait past the deadline.
+      const result = await withTimeout(model.generateContent({ contents }), remaining, `timeout after ${DEADLINE_MS / 1000}s`);
       const blocked = result.response.promptFeedback?.blockReason;
       if (blocked) return Response.json({ answer: "מצטער, לא אוכל לענות על זה. אפשר לנסות לנסח את השאלה אחרת." });
       let answer = "";
@@ -157,27 +153,32 @@ ${recipeContext(body.recipe)}`;
       } catch {
         // a response cut off by a safety filter has no text
       }
-      if (!answer) {
-        attempts.push({ model: modelName, message: `empty answer (finishReason: ${result.response.candidates?.[0]?.finishReason ?? "unknown"})` });
-        continue; // try the next model rather than answering with nothing
-      }
-      return Response.json({ answer });
+      if (answer) return Response.json({ answer });
+      attempts.push({ model: modelName, message: `empty answer (finishReason: ${result.response.candidates?.[0]?.finishReason ?? "unknown"})` });
     } catch (error) {
       const status = statusOf(error);
       const message = String((error as Error | null)?.message ?? error).slice(0, 400);
       attempts.push({ model: modelName, status, message });
       console.log(error);
       console.error(`[chef] Gemini request failed (model ${modelName}, status ${status ?? "none"}):`, message);
-      // A bad key or an exhausted quota-free account won't improve with another model; anything else might
-      // (model retired -> 404, model busy -> 503, model-specific limit -> 429), so try the next one.
-      if (isKeyProblem(status, message)) break;
+      // Only "model not found" is worth another model; a bad key, quota or timeout won't improve.
+      if (status !== 404) break;
     }
   }
 
   const last = attempts[attempts.length - 1];
-  console.error("[chef] all attempts failed:", JSON.stringify(attempts));
-  const detail = `${last?.model ?? "?"}: ${last?.status ? `[${last.status}] ` : ""}${last?.message ?? ""}`.slice(0, 400);
-  if (last && isKeyProblem(last.status, last.message)) return Response.json({ error: "bad_key", detail }, { status: 502 });
-  if (attempts.length > 0 && attempts.every((attempt) => attempt.status === 429)) return Response.json({ error: "busy", detail }, { status: 429 });
-  return Response.json({ error: "failed", detail, tried: attempts.map((attempt) => attempt.model) }, { status: 502 });
+  console.error("[chef] failed:", JSON.stringify(attempts));
+  const detail = last ? `${last.model}: ${last.status ? `[${last.status}] ` : ""}${last.message}`.slice(0, 400) : "no time left";
+  if (!last || /timeout/i.test(last.message)) return Response.json({ error: "timeout", detail }, { status: 504 });
+  if (isKeyProblem(last.status, last.message)) return Response.json({ error: "bad_key", detail }, { status: 502 });
+  if (last.status === 429) return Response.json({ error: "busy", detail }, { status: 429 });
+  return Response.json({ error: "failed", detail }, { status: 502 });
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }

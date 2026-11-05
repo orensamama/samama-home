@@ -5,13 +5,16 @@ import { ChefHat, Send, X } from "lucide-react";
 import { chefSuggestions } from "@/lib/chefSuggestions";
 import type { Recipe } from "@/lib/recipeData";
 
-type Turn = { role: "user" | "assistant"; content: string };
+const CLIENT_TIMEOUT_MS = 12000;
+
+type Turn ={ role: "user" | "assistant"; content: string };
 
 
 const ERROR_TEXT: Record<string, string> = {
   no_key: "העוזר עדיין לא הופעל: צריך להגדיר GEMINI_API_KEY בהגדרות הפרויקט ב-Vercel (Settings ← Environment Variables) ולפרוס מחדש. מפתח חינמי: aistudio.google.com/apikey",
   bad_key: "מפתח ה-API שהוגדר לא תקין. בדקו את GEMINI_API_KEY ב-Vercel.",
   rate_limited: "יותר מדי שאלות בזמן קצר. נסו שוב בעוד כמה דקות.",
+  timeout: "השף לא הגיב בזמן (יותר מ-8 שניות). נסו שוב בעוד רגע, או נסחו את השאלה קצרה יותר.",
   busy: "השף עסוק כרגע. נסו שוב בעוד רגע.",
 };
 
@@ -38,9 +41,14 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
     setInput("");
     setError(null);
     setBusy(true);
+    // The server gives up on Gemini after 8 seconds; if nothing at all comes back by 12 the
+    // "thinking" state ends here with a message instead of hanging.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
     try {
       const response = await fetch("/api/chef", {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           recipe: {
@@ -61,9 +69,11 @@ export default function ChefAssistant({ recipe }: { recipe: Recipe }) {
       } else {
         setTurns([...next, { role: "assistant", content: data.answer }]);
       }
-    } catch {
-      setError("אין חיבור לשרת. נסו שוב.");
+    } catch (err) {
+      const timedOut = err instanceof DOMException && err.name === "AbortError";
+      setError(timedOut ? ERROR_TEXT.timeout : "אין חיבור לשרת. נסו שוב.");
     } finally {
+      clearTimeout(timer);
       setBusy(false);
     }
   }
