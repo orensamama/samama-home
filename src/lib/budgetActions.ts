@@ -215,26 +215,6 @@ export async function saveQuickStore(storeName: string, categoryId: string) {
   return result;
 }
 
-// The shops the family removed from the quick-add grid: shared across devices in app_settings.
-const QUICK_HIDDEN_SETTING = "quick_add_hidden";
-
-export async function loadQuickHidden(): Promise<string[] | null> {
-  const { data, error } = await supabase.from("app_settings").select("value").eq("key", QUICK_HIDDEN_SETTING).maybeSingle();
-  if (error) return null;
-  try {
-    const parsed: unknown = data?.value ? JSON.parse(data.value) : [];
-    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-export async function saveQuickHidden(keys: string[]) {
-  return supabase
-    .from("app_settings")
-    .upsert({ key: QUICK_HIDDEN_SETTING, value: JSON.stringify(keys), updated_at: new Date().toISOString() });
-}
-
 export async function updateMerchant(
   id: string,
   patch: { store_name?: string; category_id?: string; is_favorite?: boolean }

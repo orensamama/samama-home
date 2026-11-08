@@ -5,8 +5,8 @@ import { BookmarkPlus, ChefHat, Send, X } from "lucide-react";
 import { chefSuggestions } from "@/lib/chefSuggestions";
 import type { Recipe } from "@/lib/recipeData";
 
-// Just above the server's own 8s cap, so the server's JSON answer (with its reason) arrives first.
-const CLIENT_TIMEOUT_MS = 10000;
+// Just above the server's own 10s deadline, so the server's JSON answer (with its reason) arrives first.
+const CLIENT_TIMEOUT_MS = 12000;
 
 type Turn = { role: "user" | "assistant"; content: string };
 
@@ -69,7 +69,7 @@ export default function ChefAssistant({
     setInput("");
     setError(null);
     setBusy(true);
-    // The server gives up on Gemini after 8 seconds; if nothing at all comes back by 10 the
+    // The server gives up on Gemini after 10 seconds; if nothing at all comes back by 12 the
     // "thinking" state ends here with a message instead of hanging.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);

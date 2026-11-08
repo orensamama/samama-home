@@ -1,18 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowRight, Check, Delete, Loader2, Plus, Settings2, Trash2, X, Zap } from "lucide-react";
+import { ArrowRight, Check, Delete, Loader2, Plus, Settings2, Star, Trash2, X, Zap } from "lucide-react";
+import type { PostgrestError } from "@supabase/supabase-js";
 import CategorySelect from "@/components/CategorySelect";
-import { loadQuickHidden, saveQuickHidden, saveQuickStore, updateMerchant } from "@/lib/budgetActions";
+import { deleteMerchant, saveQuickStore, updateMerchant } from "@/lib/budgetActions";
 import { quickVendors, resolveQuickCategory } from "@/lib/quickAdd";
-import { normalizeStoreKey, type BudgetCategory, type BudgetExpense, type MerchantCategory } from "@/lib/budgetData";
+import type { BudgetCategory, BudgetExpense, MerchantCategory } from "@/lib/budgetData";
 import { friendlyErrorMessage } from "@/lib/supabaseErrors";
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "back"] as const;
 const MAX_CHARS = 8;
-const HIDDEN_CACHE_KEY = "samama-home:quick-hidden";
-const GRID_SIZE = 8;
-const MANAGE_SIZE = 40;
 
 /** Adds one keypad press to the amount text: digits, one dot, at most two decimals. */
 function press(current: string, key: string): string {
@@ -28,30 +26,84 @@ function press(current: string, key: string): string {
   return current + key;
 }
 
-function readHiddenCache(): string[] {
-  try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(HIDDEN_CACHE_KEY) ?? "[]");
-    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeHiddenCache(keys: string[]) {
-  try {
-    window.localStorage.setItem(HIDDEN_CACHE_KEY, JSON.stringify(keys));
-  } catch {
-    // private mode / storage full: the shared copy in the database still holds
-  }
-}
-
 const selectClass =
   "min-w-0 max-w-[10rem] shrink-0 rounded-lg border border-stone-200 bg-white px-1.5 py-1.5 text-xs text-stone-700 outline-none focus:border-amber-400 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-200";
 
+/** One store in "ניהול חנויות": star = in the quick-add grid, category, and a two-tap delete. */
+function StoreRow({
+  merchant,
+  categories,
+  busy,
+  onToggleStar,
+  onChangeCategory,
+  onDelete,
+}: {
+  merchant: MerchantCategory;
+  categories: BudgetCategory[];
+  busy: boolean;
+  onToggleStar: (merchant: MerchantCategory) => void;
+  onChangeCategory: (merchant: MerchantCategory, categoryId: string) => void;
+  onDelete: (merchant: MerchantCategory) => void;
+}) {
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    if (!armed) return;
+    const timeout = setTimeout(() => setArmed(false), 3000);
+    return () => clearTimeout(timeout);
+  }, [armed]);
+
+  const starred = Boolean(merchant.is_favorite);
+  return (
+    <li className="flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 dark:border-stone-700 dark:bg-stone-900">
+      <button
+        type="button"
+        onClick={() => onToggleStar(merchant)}
+        disabled={busy}
+        aria-pressed={starred}
+        aria-label={starred ? `הסרת ${merchant.store_name} מההוצאה המהירה` : `הוספת ${merchant.store_name} להוצאה המהירה`}
+        title={starred ? "מופיע בהוצאה מהירה - לחצו להסרה" : "הוספה להוצאה מהירה"}
+        className="shrink-0 rounded-full p-1 transition-colors hover:bg-amber-50 disabled:opacity-50 dark:hover:bg-stone-800"
+      >
+        <Star className={`h-5 w-5 ${starred ? "fill-amber-400 text-amber-500" : "text-stone-300 dark:text-stone-600"}`} />
+      </button>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium text-stone-800 dark:text-stone-100">{merchant.store_name}</span>
+      <CategorySelect
+        categories={categories}
+        value={merchant.category_id}
+        onChange={(categoryId) => categoryId && onChangeCategory(merchant, categoryId)}
+        emptyLabel="בחרו קטגוריה"
+        ariaLabel={`קטגוריה עבור ${merchant.store_name}`}
+        className={selectClass}
+      />
+      {armed ? (
+        <button
+          type="button"
+          onClick={() => onDelete(merchant)}
+          disabled={busy}
+          className="shrink-0 rounded-lg bg-red-500 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-600 disabled:opacity-50"
+        >
+          מחק
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setArmed(true)}
+          disabled={busy}
+          aria-label={`מחיקת ${merchant.store_name}`}
+          className="shrink-0 rounded-full p-1.5 text-stone-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-50 dark:hover:bg-red-950/30"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      )}
+    </li>
+  );
+}
+
 /**
- * The 3-second way to log a purchase: pick the shop from a grid of the usual ones, type the amount on a big
- * numeric keypad, confirm. The category comes from the shop (remembered, or the built-in guess). "ניהול חנויות"
- * lets the family add shops, remove ones they don't use, and choose each shop's category.
+ * The 3-second way to log a purchase: pick the shop from a grid of the starred "common stores", type the
+ * amount on a big numeric keypad, confirm. The category comes from the shop. "ניהול חנויות" adds a shop,
+ * stars/unstars shops (star = shown in the grid), re-files a shop under another category, or deletes it.
  */
 export default function QuickTapModal({
   categories,
@@ -83,31 +135,19 @@ export default function QuickTapModal({
   const [manageError, setManageError] = useState<string | null>(null);
   const [newStore, setNewStore] = useState("");
   const [newCategory, setNewCategory] = useState("");
-  // Shops removed from the grid (normalized names): cached locally, shared through the database.
-  const [hidden, setHidden] = useState<string[]>(readHiddenCache);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadQuickHidden().then((keys) => {
-      if (cancelled || !keys) return;
-      setHidden(keys);
-      writeHiddenCache(keys);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const [search, setSearch] = useState("");
 
   const spendingCategories = useMemo(() => categories.filter((category) => category.kind !== "income"), [categories]);
-  const skipIds = useMemo(
-    () => new Set(categories.filter((category) => category.kind !== "variable").map((category) => category.id)),
-    [categories]
-  );
-  const hiddenSet = useMemo(() => new Set(hidden), [hidden]);
-  const vendors = useMemo(
-    () => quickVendors(expenses, merchants, skipIds, hiddenSet, managing ? MANAGE_SIZE : GRID_SIZE),
-    [expenses, merchants, skipIds, hiddenSet, managing]
-  );
+  const vendors = useMemo(() => quickVendors(expenses, merchants), [expenses, merchants]);
+  const managed = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return merchants
+      .filter((merchant) => !query || merchant.store_name.toLowerCase().includes(query))
+      .sort(
+        (a, b) =>
+          Number(Boolean(b.is_favorite)) - Number(Boolean(a.is_favorite)) || a.store_name.localeCompare(b.store_name, "he")
+      );
+  }, [merchants, search]);
   const category = useMemo(() => (vendor ? resolveQuickCategory(vendor, merchants, categories) : null), [vendor, merchants, categories]);
   const amount = Number(digits);
   const valid = digits !== "" && Number.isFinite(amount) && amount > 0;
@@ -126,54 +166,27 @@ export default function QuickTapModal({
     setTimeout(onClose, 700);
   }
 
-  async function updateHidden(next: string[]) {
-    setHidden(next);
-    writeHiddenCache(next);
-    const { error: saveError } = await saveQuickHidden(next);
-    if (saveError) setManageError("הרשימה נשמרה רק במכשיר הזה: " + friendlyErrorMessage(saveError));
+  /** Runs one edit of the shop list, then reloads it. */
+  async function edit(action: () => PromiseLike<{ error: PostgrestError | null }>) {
+    if (busy) return false;
+    setBusy(true);
+    setManageError(null);
+    const { error: failure } = await action();
+    if (failure) setManageError(friendlyErrorMessage(failure));
+    else await onMerchantsChanged();
+    setBusy(false);
+    return !failure;
   }
 
   async function handleAddStore(event: FormEvent) {
     event.preventDefault();
     const name = newStore.trim();
-    if (!name || !newCategory || busy) return;
-    setBusy(true);
-    setManageError(null);
-    const { error: saveError } = await saveQuickStore(name, newCategory);
-    if (saveError) setManageError(friendlyErrorMessage(saveError));
-    else {
-      const key = normalizeStoreKey(name);
-      if (hiddenSet.has(key)) await updateHidden(hidden.filter((entry) => entry !== key));
+    if (!name || !newCategory) return;
+    const ok = await edit(() => saveQuickStore(name, newCategory));
+    if (ok) {
       setNewStore("");
       setNewCategory("");
-      await onMerchantsChanged();
     }
-    setBusy(false);
-  }
-
-  async function handleChangeCategory(name: string, categoryId: string) {
-    if (!categoryId || busy) return;
-    setBusy(true);
-    setManageError(null);
-    const { error: saveError } = await saveQuickStore(name, categoryId);
-    if (saveError) setManageError(friendlyErrorMessage(saveError));
-    else await onMerchantsChanged();
-    setBusy(false);
-  }
-
-  async function handleRemoveStore(name: string) {
-    if (busy) return;
-    setBusy(true);
-    setManageError(null);
-    const key = normalizeStoreKey(name);
-    await updateHidden([...hidden.filter((entry) => entry !== key), key]);
-    // Un-star it too (keeps the store -> category memory, so past and future expenses still file correctly).
-    const remembered = merchants.find((merchant) => merchant.store_key === key && merchant.is_favorite);
-    if (remembered) {
-      await updateMerchant(remembered.id, { is_favorite: false });
-      await onMerchantsChanged();
-    }
-    setBusy(false);
   }
 
   const title = managing ? "ניהול חנויות" : vendor ? vendor : "הוצאה מהירה";
@@ -204,7 +217,7 @@ export default function QuickTapModal({
         {managing ? (
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
             <p className="text-xs text-stone-500 dark:text-stone-400">
-              החנויות שמופיעות ב&quot;הוצאה מהירה&quot;. בחרו לכל חנות קטגוריה - ההוצאה תיכנס אליה אוטומטית ותעדכן את התקציב.
+              ⭐ = החנות מופיעה ב&quot;הוצאה מהירה&quot;. בחרו לכל חנות קטגוריה - ההוצאה תיכנס אליה אוטומטית ותעדכן את התקציב.
             </p>
             {manageError && (
               <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-950/30 dark:text-rose-400">
@@ -213,7 +226,7 @@ export default function QuickTapModal({
             )}
 
             <form onSubmit={handleAddStore} className="flex flex-col gap-1.5 rounded-2xl border border-dashed border-amber-300 bg-amber-50/60 p-2.5 dark:border-amber-900/50 dark:bg-amber-950/10">
-              <p className="text-xs font-medium text-stone-600 dark:text-stone-300">הוספת חנות</p>
+              <p className="text-xs font-medium text-stone-600 dark:text-stone-300">הוספת חנות חדשה</p>
               <div className="flex gap-1.5">
                 <input
                   type="text"
@@ -243,33 +256,33 @@ export default function QuickTapModal({
               </div>
             </form>
 
+            {merchants.length > 8 && (
+              <input
+                type="text"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="חיפוש חנות..."
+                className="w-full rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-200"
+              />
+            )}
+
             <ul className="flex flex-col gap-1.5">
-              {vendors.map((name) => {
-                const current = resolveQuickCategory(name, merchants, categories);
-                return (
-                  <li key={name} className="flex items-center gap-2 rounded-xl border border-stone-200 bg-white px-2.5 py-1.5 dark:border-stone-700 dark:bg-stone-900">
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-stone-800 dark:text-stone-100">{name}</span>
-                    <CategorySelect
-                      categories={spendingCategories}
-                      value={current?.id ?? ""}
-                      onChange={(categoryId) => void handleChangeCategory(name, categoryId)}
-                      emptyLabel="בחרו קטגוריה"
-                      ariaLabel={`קטגוריה עבור ${name}`}
-                      className={selectClass}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void handleRemoveStore(name)}
-                      disabled={busy}
-                      aria-label={`הסרת ${name} מההוצאה המהירה`}
-                      className="shrink-0 rounded-full p-1.5 text-stone-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-50 dark:hover:bg-red-950/30"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </li>
-                );
-              })}
-              {vendors.length === 0 && <li className="text-xs text-stone-400 dark:text-stone-500">אין חנויות. הוסיפו חנות למעלה.</li>}
+              {managed.map((merchant) => (
+                <StoreRow
+                  key={merchant.id}
+                  merchant={merchant}
+                  categories={spendingCategories}
+                  busy={busy}
+                  onToggleStar={(entry) => void edit(() => updateMerchant(entry.id, { is_favorite: !entry.is_favorite }))}
+                  onChangeCategory={(entry, categoryId) => void edit(() => updateMerchant(entry.id, { category_id: categoryId }))}
+                  onDelete={(entry) => void edit(() => deleteMerchant(entry.id))}
+                />
+              ))}
+              {managed.length === 0 && (
+                <li className="text-xs text-stone-400 dark:text-stone-500">
+                  {merchants.length === 0 ? "עדיין אין חנויות. הוסיפו חנות למעלה." : "לא נמצאו חנויות."}
+                </li>
+              )}
             </ul>
 
             <button
@@ -297,6 +310,11 @@ export default function QuickTapModal({
                 ניהול חנויות
               </button>
             </div>
+            {vendors.length === 0 && (
+              <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+                עדיין אין חנויות נפוצות. ב&quot;ניהול חנויות&quot; סמנו חנויות ב-⭐ או הוסיפו חדשות, והן יופיעו כאן.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-2.5">
               {vendors.map((name) => (
                 <button

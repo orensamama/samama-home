@@ -10,7 +10,7 @@ import {
   type MerchantCategory,
 } from "@/lib/budgetData";
 
-/** The shops offered before the family has history of its own, with the category each one means. */
+/** Built-in shop -> category guesses, used when a shop has no remembered category yet. */
 export const DEFAULT_QUICK_VENDORS: { name: string; category: string }[] = [
   { name: "רמי לוי", category: "סופר/מזון" },
   { name: "דלק", category: "דלק" },
@@ -40,43 +40,19 @@ export function resolveQuickCategory(
 }
 
 /**
- * The shops for the quick-tap grid: starred stores first, then the ones used most in the last three
- * months, then the defaults to fill the grid. Purchases in `skipCategoryIds` (income, recurring bills,
- * savings) don't count: this grid is for everyday spending. `hidden` holds the (normalized) names the
- * family removed from the grid with "ניהול חנויות".
+ * The shops for the quick-tap grid: ONLY the ones starred as common stores (the star in "ניהול חנויות"
+ * or in the store-mapping panel), the most used in the last three months first.
  */
-export function quickVendors(
-  expenses: BudgetExpense[],
-  merchants: MerchantCategory[],
-  skipCategoryIds: Set<string>,
-  hidden: ReadonlySet<string> = new Set(),
-  limit = 8,
-  today: Date = new Date()
-): string[] {
-  const names = new Map<string, string>(); // normalized key -> display name, in priority order
-  const add = (name: string) => {
-    const key = normalizeStoreKey(name);
-    if (key && !hidden.has(key) && !names.has(key)) names.set(key, name.trim());
-  };
-
-  for (const merchant of merchants) if (merchant.is_favorite) add(merchant.store_name);
-
+export function quickVendors(expenses: BudgetExpense[], merchants: MerchantCategory[], today: Date = new Date()): string[] {
   const since = new Date(today.getFullYear(), today.getMonth() - 3, today.getDate()).toISOString().slice(0, 10);
-  const counts = new Map<string, { name: string; count: number }>();
+  const uses = new Map<string, number>();
   for (const expense of expenses) {
     if (expense.date < since) continue;
-    if (expense.category_id && skipCategoryIds.has(expense.category_id)) continue;
-    const name = (expense.store ?? "").trim();
-    const key = normalizeStoreKey(name);
-    if (!key) continue;
-    const entry = counts.get(key);
-    if (entry) entry.count += 1;
-    else counts.set(key, { name, count: 1 });
+    const key = normalizeStoreKey(expense.store ?? "");
+    if (key) uses.set(key, (uses.get(key) ?? 0) + 1);
   }
-  Array.from(counts.values())
-    .sort((a, b) => b.count - a.count)
-    .forEach((entry) => add(entry.name));
-
-  for (const preset of DEFAULT_QUICK_VENDORS) add(preset.name);
-  return Array.from(names.values()).slice(0, limit);
+  return merchants
+    .filter((merchant) => merchant.is_favorite && merchant.store_name.trim())
+    .sort((a, b) => (uses.get(b.store_key) ?? 0) - (uses.get(a.store_key) ?? 0) || a.store_name.localeCompare(b.store_name, "he"))
+    .map((merchant) => merchant.store_name.trim());
 }

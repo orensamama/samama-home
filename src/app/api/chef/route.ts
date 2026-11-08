@@ -4,8 +4,10 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 // (free tier). The API key stays on the server (GEMINI_API_KEY in the Vercel project settings) and
 // never reaches the browser.
 //
-// Built to be FAST: one light model, no model hunting, a short prompt and a short answer, and a
-// hard 8s cap -- when Gemini doesn't answer in time the visitor gets a short error, not a hang.
+// Built to be FAST: a short prompt and a short answer, and a hard time cap -- when Gemini doesn't
+// answer in time the visitor gets a short error, not a hang. Only the official SDK is used (no
+// hand-made REST calls), and no model discovery: a fixed, short list of models, tried in order
+// ONLY when Google answers 404 (model retired / not found); the one that works is remembered.
 //
 // This route has no sign-in, like the rest of the app, so it is limited: short questions,
 // a short history, a bounded recipe, and a per-visitor rate limit -- enough to stop a
@@ -20,11 +22,18 @@ const MAX_OUTPUT_TOKENS = 500;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 
-// One fixed model on the stable v1 endpoint. The GEMINI_MODEL environment variable is deliberately NOT
-// read: a stale value left in the project settings (an old or unsupported model) must never decide
-// which model the chef calls. To change the model, change this constant.
-const MODEL = "gemini-1.5-flash";
-const TIMEOUT_MS = 8000;
+// The first model is always gemini-1.5-flash. The GEMINI_MODEL environment variable is deliberately NOT
+// read: a stale value left in the project settings must never decide which model the chef calls.
+// A 404 from Google means "this model is gone for your key" (the whole 1.5 family has been retired by
+// Google), so the next one in the list is tried; 404s come back in well under a second, so the chain
+// costs almost nothing. The requested fallbacks come first, then current light models.
+const MODELS = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+const TIMEOUT_MS = 8000; // one model call
+const DEADLINE_MS = 10000; // the whole request, 404 hops included
+const WORKING_TTL_MS = 60 * 60 * 1000;
+
+// The model that last answered: later requests go straight to it instead of hopping over 404s again.
+let working: { at: number; model: string } | null = null;
 
 /** HTTP status of a Gemini SDK error ("[404 Not Found] ..." when the status field isn't set). */
 function statusOf(error: unknown): number | undefined {
@@ -117,7 +126,7 @@ async function handle(request: Request): Promise<Response> {
   }
 
   // The instructions (and the recipe) ride along in the first user message: that works on every API
-  // version, whereas a separate "systemInstruction" field is not accepted on the stable v1 endpoint.
+  // version and model, with no separate "systemInstruction" field.
   const instructions = body.recipe ? `${SYSTEM}\n\n${recipeContext(body.recipe)}` : SYSTEM_FREE;
   // Gemini's roles are "user" / "model".
   const contents = turns.map((turn, index) => ({
@@ -125,39 +134,60 @@ async function handle(request: Request): Promise<Response> {
     parts: [{ text: index === 0 ? `${instructions}\n\nשאלה: ${turn.content}` : turn.content }],
   }));
 
-  const modelName = MODEL;
-  try {
-    const model = new GoogleGenerativeAI(apiKey).getGenerativeModel(
-      { model: modelName, generationConfig: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.5 } },
-      { timeout: TIMEOUT_MS, apiVersion: "v1" }
-    );
-    // The AbortSignal cancels the HTTP request itself; the race is the backstop.
-    const result = await withTimeout(
-      model.generateContent({ contents }, { signal: AbortSignal.timeout(TIMEOUT_MS) }),
-      TIMEOUT_MS,
-      `timeout after ${TIMEOUT_MS / 1000}s`
-    );
-    if (result.response.promptFeedback?.blockReason) {
-      return Response.json({ answer: "מצטער, לא אוכל לענות על זה. אפשר לנסות לנסח את השאלה אחרת." });
-    }
-    let answer = "";
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const started = Date.now();
+  // The remembered working model goes first; then the fixed list, in order.
+  const order = working && Date.now() - working.at < WORKING_TTL_MS ? [working.model, ...MODELS.filter((name) => name !== working!.model)] : MODELS;
+  let lastDetail = "";
+  let lastStatus: number | undefined;
+  let lastMessage = "";
+
+  for (const modelName of order) {
+    const remaining = Math.min(TIMEOUT_MS, DEADLINE_MS - (Date.now() - started));
+    if (remaining < 1000) break;
     try {
-      answer = result.response.text().trim();
-    } catch {
-      // a response cut off by a safety filter has no text
+      // The official SDK, default endpoint: getGenerativeModel({ model }) and generateContent.
+      const model = genAI.getGenerativeModel({ model: modelName, generationConfig: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.5 } });
+      // The AbortSignal cancels the HTTP request itself; the race is the backstop.
+      const result = await withTimeout(
+        model.generateContent({ contents }, { signal: AbortSignal.timeout(remaining), timeout: remaining }),
+        remaining,
+        `timeout after ${Math.round(remaining / 1000)}s`
+      );
+      if (result.response.promptFeedback?.blockReason) {
+        return Response.json({ answer: "מצטער, לא אוכל לענות על זה. אפשר לנסות לנסח את השאלה אחרת." });
+      }
+      let answer = "";
+      try {
+        answer = result.response.text().trim();
+      } catch {
+        // a response cut off by a safety filter has no text
+      }
+      if (answer) {
+        working = { at: Date.now(), model: modelName };
+        return Response.json({ answer });
+      }
+      return Response.json({ error: "failed", detail: `${modelName}: empty answer (finishReason: ${result.response.candidates?.[0]?.finishReason ?? "unknown"})` }, { status: 502 });
+    } catch (error) {
+      lastStatus = statusOf(error);
+      lastMessage = String((error as Error | null)?.message ?? error).slice(0, 400);
+      lastDetail = `${modelName}: ${lastStatus ? `[${lastStatus}] ` : ""}${lastMessage}`.slice(0, 400);
+      console.error(`[chef] Gemini request failed (model ${modelName}, status ${lastStatus ?? "none"}):`, lastMessage);
+      // Only "model not found" moves on to the next model; a timeout, a bad key or a busy service would
+      // fail the same way with any of them.
+      if (lastStatus !== 404) break;
+      if (working?.model === modelName) working = null;
     }
-    if (answer) return Response.json({ answer });
-    return Response.json({ error: "failed", detail: `${modelName}: empty answer (finishReason: ${result.response.candidates?.[0]?.finishReason ?? "unknown"})` }, { status: 502 });
-  } catch (error) {
-    const status = statusOf(error);
-    const message = String((error as Error | null)?.message ?? error).slice(0, 400);
-    console.error(`[chef] Gemini request failed (model ${modelName}, status ${status ?? "none"}):`, message);
-    const detail = `${modelName}: ${status ? `[${status}] ` : ""}${message}`.slice(0, 400);
-    if (/timeout|abort/i.test(message)) return Response.json({ error: "timeout", detail }, { status: 504 });
-    if (isKeyProblem(status, message)) return Response.json({ error: "bad_key", detail }, { status: 502 });
-    if (status === 429) return Response.json({ error: "busy", detail }, { status: 429 });
-    return Response.json({ error: "failed", detail }, { status: 502 });
   }
+
+  if (!lastMessage) return Response.json({ error: "timeout", detail: "no time left" }, { status: 504 });
+  if (/timeout|abort/i.test(lastMessage)) return Response.json({ error: "timeout", detail: lastDetail }, { status: 504 });
+  if (isKeyProblem(lastStatus, lastMessage)) return Response.json({ error: "bad_key", detail: lastDetail }, { status: 502 });
+  if (lastStatus === 429) return Response.json({ error: "busy", detail: lastDetail }, { status: 429 });
+  if (lastStatus === 404) {
+    return Response.json({ error: "failed", detail: `אף אחד מהמודלים לא זמין למפתח הזה. ${lastDetail}`.slice(0, 400) }, { status: 502 });
+  }
+  return Response.json({ error: "failed", detail: lastDetail }, { status: 502 });
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
