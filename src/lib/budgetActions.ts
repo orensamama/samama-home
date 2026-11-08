@@ -2,7 +2,11 @@ import type { PostgrestError } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import { logSupabaseError } from "@/lib/supabaseErrors";
 import { isNetworkError } from "@/lib/syncQueue";
+import { resolveQuickCategory } from "@/lib/quickAdd";
 import {
+  defaultDateForMonth,
+  defaultFlowFor,
+  monthKeyFromOffset,
   normalizeStoreKey,
   suggestMerchant,
   type BudgetCategory,
@@ -70,6 +74,90 @@ export async function saveExpense(params: {
     }
   }
   return { error: null, mappingSaved, flowSkipped };
+}
+
+/** The quick-tap flow: a shop and an amount, dated today, filed under the category the shop points to. */
+export async function saveQuickExpense(params: {
+  vendor: string;
+  amount: number;
+  categories: BudgetCategory[];
+  merchants: MerchantCategory[];
+}) {
+  const { vendor, amount, categories, merchants } = params;
+  const category = resolveQuickCategory(vendor, merchants, categories);
+  return saveExpense({
+    values: {
+      amount: String(amount),
+      amount_pending: false,
+      store: vendor,
+      category_id: category?.id ?? "",
+      date: defaultDateForMonth(monthKeyFromOffset(0)),
+      notes: "",
+      receipt_url: "",
+      flow: defaultFlowFor(category?.kind),
+      remember_mapping: false,
+    },
+    editingId: null,
+    categories,
+    merchants,
+  });
+}
+
+export type ImportRow = { date: string; store: string; amount: number; categoryId: string };
+
+/**
+ * Inserts many transactions at once (a statement import). `flow` is left out on purpose: it is implied by the
+ * category, and it keeps working before migration 0024 has been run. Stores we have never seen are learned.
+ */
+export async function importExpenses(params: {
+  rows: ImportRow[];
+  categories: BudgetCategory[];
+  merchants: MerchantCategory[];
+}): Promise<{ error: PostgrestError | null; inserted: number; learned: number }> {
+  const { rows, categories, merchants } = params;
+  const categoryById = new Map(categories.map((category) => [category.id, category]));
+  const payload = rows.map((row) => {
+    const category = categoryById.get(row.categoryId) ?? null;
+    const store = row.store.trim();
+    return {
+      title: store || category?.name || "הוצאה",
+      amount: row.amount,
+      amount_pending: false,
+      expense_date: row.date,
+      notes: "יובא מדף חשבון",
+      store: store || null,
+      category_id: category?.id ?? null,
+      receipt_url: null,
+    };
+  });
+
+  let inserted = 0;
+  for (let start = 0; start < payload.length; start += 100) {
+    const chunk = payload.slice(start, start + 100);
+    const { error } = await supabase.from("expenses").insert(chunk);
+    if (error) {
+      logSupabaseError("ייבוא תנועות", error);
+      return { error, inserted, learned: 0 };
+    }
+    inserted += chunk.length;
+  }
+
+  // Teach the store -> category memory from the rows that got a spending category.
+  const toLearn = new Map<string, { store: string; categoryId: string }>();
+  for (const row of rows) {
+    const category = categoryById.get(row.categoryId);
+    const store = row.store.trim();
+    if (!category || category.kind === "income" || !store || store === "ללא שם") continue;
+    if (suggestMerchant(store, merchants)) continue;
+    toLearn.set(normalizeStoreKey(store), { store, categoryId: category.id });
+  }
+  let learned = 0;
+  for (const { store, categoryId } of toLearn.values()) {
+    const { error } = await upsertMerchant(store, categoryId);
+    if (error) logSupabaseError("שמירת זיכרון חנות", error);
+    else learned += 1;
+  }
+  return { error: null, inserted, learned };
 }
 
 /**

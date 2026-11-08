@@ -2,11 +2,12 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Plus, Wallet } from "lucide-react";
+import { Plus, Wallet, Zap } from "lucide-react";
 import ExpenseFormModal from "@/components/ExpenseFormModal";
+import QuickTapModal from "@/components/QuickTapModal";
 import { SkeletonBlock } from "@/components/Skeleton";
 import { useBudgetData } from "@/lib/useBudget";
-import { createBudgetCategory, saveExpense } from "@/lib/budgetActions";
+import { createBudgetCategory, saveExpense, saveQuickExpense } from "@/lib/budgetActions";
 import { friendlyErrorMessage } from "@/lib/supabaseErrors";
 import { formatCurrency } from "@/lib/familyData";
 import {
@@ -25,6 +26,7 @@ import {
 export default function BudgetWidget() {
   const { categories, expenses, merchants, overrides, setup } = useBudgetData();
   const [showForm, setShowForm] = useState(false);
+  const [showQuick, setShowQuick] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const monthKey = monthKeyFromOffset(0);
@@ -58,6 +60,14 @@ export default function BudgetWidget() {
     merchants.refetch();
     await expenses.refetch();
     setShowForm(false);
+  }
+
+  async function handleQuickSave(vendor: string, amount: number): Promise<string | null> {
+    const { error, mappingSaved } = await saveQuickExpense({ vendor, amount, categories: categories.rows, merchants: merchants.rows });
+    if (error) return friendlyErrorMessage(error);
+    if (mappingSaved) merchants.refetch();
+    await expenses.refetch();
+    return null;
   }
 
   // A custom income source added from the form's income mode.
@@ -101,17 +111,29 @@ export default function BudgetWidget() {
                 </p>
               )}
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setFormError(null);
-                setShowForm(true);
-              }}
-              className="pointer-events-auto flex shrink-0 items-center gap-1 rounded-xl bg-white px-3 py-2 text-xs font-bold text-stone-800 shadow-sm transition active:scale-95 hover:bg-white/90"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              הוצאה חדשה
-            </button>
+            <div className="pointer-events-auto flex shrink-0 items-center gap-1.5">
+              {hasStructure && (
+                <button
+                  type="button"
+                  onClick={() => setShowQuick(true)}
+                  aria-label="הוצאה מהירה"
+                  className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/25 text-white shadow-sm transition active:scale-95 hover:bg-white/35"
+                >
+                  <Zap className="h-4 w-4" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setFormError(null);
+                  setShowForm(true);
+                }}
+                className="flex items-center gap-1 rounded-xl bg-white px-3 py-2 text-xs font-bold text-stone-800 shadow-sm transition active:scale-95 hover:bg-white/90"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                הוצאה חדשה
+              </button>
+            </div>
           </div>
 
           {hasStructure && (
@@ -130,6 +152,21 @@ export default function BudgetWidget() {
           )}
         </div>
       </div>
+
+      {showQuick && (
+        <QuickTapModal
+          categories={categories.rows}
+          merchants={merchants.rows}
+          expenses={expenses.rows}
+          onClose={() => setShowQuick(false)}
+          onOther={() => {
+            setShowQuick(false);
+            setFormError(null);
+            setShowForm(true);
+          }}
+          onSave={handleQuickSave}
+        />
+      )}
 
       {showForm && (
         <ExpenseFormModal

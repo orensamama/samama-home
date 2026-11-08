@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useState, type FormEvent } from "react";
-import { Check, ChevronDown, Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Eye, EyeOff, Pencil, Plus, Target, Trash2 } from "lucide-react";
 import { formatCurrency } from "@/lib/familyData";
 import {
   KIND_META,
@@ -91,6 +91,8 @@ function CategoryRow({
   const { category, spent, budget, ratio, committed } = status;
   const kind = category.kind;
   const [saved, setSaved] = useState(false);
+  // A quick monthly target for this category, set right from the row (no need for edit mode).
+  const [editingBudget, setEditingBudget] = useState(false);
 
   // A brief checkmark after an edit is committed, since saving happens on blur.
   useEffect(() => {
@@ -212,8 +214,15 @@ function CategoryRow({
 
   const tone = progressTone(spent, budget);
   const overBy = budget > 0 && spent > budget ? spent - budget : 0;
+  const saveBudgetFromRow = (input: HTMLInputElement) => {
+    const value = Number(input.value || 0);
+    if (!Number.isNaN(value) && value >= 0) {
+      if (value !== budget) actions.onUpdateBudget(category.id, value);
+      setEditingBudget(false);
+    }
+  };
   return (
-    <li className="flex items-start gap-1 py-0.5">
+    <li className="flex flex-wrap items-start gap-1 py-0.5">
       {/* Tap the row: the transactions list below filters to this category. */}
       <button
         type="button"
@@ -233,11 +242,62 @@ function CategoryRow({
           </span>
         </span>
         {budget > 0 && <ProgressBar ratio={ratio} tone={tone} />}
-        {overBy > 0 && (
-          <span className="text-[11px] font-medium text-rose-600 dark:text-rose-400">חריגה של {formatCurrency(overBy)}</span>
+        {budget > 0 && (
+          <span className={`flex justify-between text-[11px] tabular-nums ${overBy > 0 ? "font-medium text-rose-600 dark:text-rose-400" : "text-stone-400 dark:text-stone-500"}`}>
+            <span>{overBy > 0 ? `חריגה של ${formatCurrency(overBy)}` : `נשאר ${formatCurrency(budget - spent)}`}</span>
+            <span>{Math.round(ratio * 100)}%</span>
+          </span>
         )}
       </button>
+      <button
+        type="button"
+        onClick={() => setEditingBudget((value) => !value)}
+        aria-label={`הגדרת יעד חודשי ל${category.name}`}
+        title="יעד חודשי"
+        className={`mt-1.5 shrink-0 rounded-full p-1 transition-colors ${
+          budget > 0 ? "text-stone-300 hover:bg-amber-100 hover:text-amber-600 dark:text-stone-600" : "bg-amber-50 text-amber-600 dark:bg-amber-950/30 dark:text-amber-400"
+        }`}
+      >
+        <Target className="h-4 w-4" />
+      </button>
       <span className="mt-1.5">{addButton}</span>
+      {editingBudget && (
+        <div className="flex w-full items-center gap-2 px-2 pb-1.5">
+          <span className="text-xs text-stone-500 dark:text-stone-400">יעד חודשי:</span>
+          <span className="relative">
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              autoFocus
+              defaultValue={budget || ""}
+              placeholder="0"
+              aria-label={`יעד חודשי - ${category.name}`}
+              onFocus={(event) => event.target.select()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") saveBudgetFromRow(event.currentTarget);
+                if (event.key === "Escape") setEditingBudget(false);
+              }}
+              id={`budget-${category.id}`}
+              className="w-28 rounded-lg border border-amber-300 bg-white py-1.5 pe-2 ps-6 text-sm font-semibold tabular-nums text-stone-800 outline-none focus:border-amber-500 dark:border-amber-800 dark:bg-stone-950 dark:text-stone-100"
+            />
+            <span className="pointer-events-none absolute start-2 top-1/2 -translate-y-1/2 text-xs text-stone-400">₪</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const input = document.getElementById(`budget-${category.id}`) as HTMLInputElement | null;
+              if (input) saveBudgetFromRow(input);
+            }}
+            className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-600"
+          >
+            שמירה
+          </button>
+          <button type="button" onClick={() => setEditingBudget(false)} className="text-xs text-stone-500 hover:underline dark:text-stone-400">
+            ביטול
+          </button>
+        </div>
+      )}
     </li>
   );
 }

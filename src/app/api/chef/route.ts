@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { rankFlashModels, type ListedModel } from "@/lib/geminiModels";
 
 // "Ask the Chef": answers questions about ONE recipe (substitutions, other appliances,
 // making it dairy-free...) with Google Gemini (free tier). The API key stays on the server
@@ -16,13 +17,48 @@ const MAX_RECIPE_CHARS = 8000;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 
-// One model: GEMINI_MODEL if set, else gemini-2.5-flash, called on the stable v1 endpoint. No other
-// model names are used. The first try is capped so a retry (for a passing overload) has time left,
-// and the whole request has one deadline: it can never hang, it always ends with an answer or a
-// JSON error.
-const DEFAULT_MODEL = "gemini-2.5-flash";
-const FIRST_ATTEMPT_MS = 7000;
-const DEADLINE_MS = 11000;
+// Model: GEMINI_MODEL if set, else gemini-1.5-flash, called on the stable v1 endpoint. If Google answers
+// 404 ("no longer available to new users", model not found...) the chef asks the API which models this
+// key can use and takes the "flash" ones that support generateContent, newest first; the first one
+// that works is remembered for later requests. The whole request has one deadline: it can never
+// hang, it always ends with an answer or a JSON error.
+const DEFAULT_MODEL = "gemini-1.5-flash";
+const PER_ATTEMPT_MS = 6000;
+const DEADLINE_MS = 12000;
+const MAX_ATTEMPTS = 5;
+const WORKING_TTL_MS = 60 * 60 * 1000;
+
+type Candidate = { model: string; apiVersion: "v1" | "v1beta" };
+
+let workingCache: { at: number; candidate: Candidate } | null = null;
+let listCache: { at: number; candidates: Candidate[] } | null = null;
+
+function dedupe(candidates: Candidate[]): Candidate[] {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => (seen.has(candidate.model) ? false : (seen.add(candidate.model), true)));
+}
+
+/** Flash models offered to this key (stable v1 list first, then v1beta), newest first. Cached an hour. */
+async function listFlashCandidates(apiKey: string, timeoutMs: number): Promise<Candidate[]> {
+  if (listCache && Date.now() - listCache.at < WORKING_TTL_MS) return listCache.candidates;
+  const found: Candidate[] = [];
+  for (const apiVersion of ["v1", "v1beta"] as const) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/${apiVersion}/models?pageSize=200`, {
+        headers: { "x-goog-api-key": apiKey },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!response.ok) throw new Error(`ListModels ${apiVersion} ${response.status}: ${(await response.text()).slice(0, 200)}`);
+      const data = (await response.json()) as { models?: ListedModel[] };
+      for (const id of rankFlashModels(data.models ?? [])) found.push({ model: id, apiVersion });
+    } catch (error) {
+      console.error(`[chef] could not list Gemini models (${apiVersion}):`, error);
+    }
+  }
+  const candidates = dedupe(found); // v1 entries first, then the v1beta-only ones
+  if (candidates.length > 0) listCache = { at: Date.now(), candidates };
+  return candidates;
+}
 
 /** HTTP status of a Gemini SDK error ("[404 Not Found] ..." when the status field isn't set). */
 function statusOf(error: unknown): number | undefined {
@@ -139,23 +175,26 @@ async function handle(request: Request): Promise<Response> {
   const genAI = new GoogleGenerativeAI(apiKey);
 
   const started = Date.now();
-  // One model (GEMINI_MODEL or gemini-2.5-flash); a second try of the same model only for a passing failure.
-  const modelName = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  const requested: Candidate = { model: process.env.GEMINI_MODEL || DEFAULT_MODEL, apiVersion: "v1" };
+  // The model that last worked is tried first; then the requested one.
+  const queue: Candidate[] = dedupe([...(workingCache && Date.now() - workingCache.at < WORKING_TTL_MS ? [workingCache.candidate] : []), requested]);
   const attempts: { model: string; status?: number; message: string }[] = [];
+  let listed = false;
 
-  for (let index = 0; index < 2; index++) {
+  for (let index = 0; index < queue.length && index < MAX_ATTEMPTS; index++) {
+    const candidate = queue[index];
     const left = DEADLINE_MS - (Date.now() - started);
-    // Leave a retry time to run: the first try gets at most FIRST_ATTEMPT_MS.
-    const remaining = index === 0 ? Math.min(left, FIRST_ATTEMPT_MS) : left;
+    // One slow model must not eat the whole budget: leave time for the next candidate.
+    const remaining = Math.min(left, PER_ATTEMPT_MS);
     if (remaining < 1000) break;
     try {
       const model = genAI.getGenerativeModel(
         {
-          model: modelName,
+          model: candidate.model,
           generationConfig: { maxOutputTokens: 2048, temperature: 0.6 },
         },
-        // The stable v1 endpoint (not v1beta); the SDK aborts the HTTP request itself after `timeout`.
-        { timeout: remaining, apiVersion: "v1" }
+        // The SDK aborts the HTTP request itself after `timeout`.
+        { timeout: remaining, apiVersion: candidate.apiVersion }
       );
       // Belt and braces: even if the SDK's own timeout didn't fire, never wait past the deadline.
       const result = await withTimeout(model.generateContent({ contents }), remaining, `timeout after ${Math.round(remaining / 1000)}s`);
@@ -167,17 +206,28 @@ async function handle(request: Request): Promise<Response> {
       } catch {
         // a response cut off by a safety filter has no text
       }
-      if (answer) return Response.json({ answer });
-      attempts.push({ model: modelName, message: `empty answer (finishReason: ${result.response.candidates?.[0]?.finishReason ?? "unknown"})` });
+      if (answer) {
+        workingCache = { at: Date.now(), candidate };
+        return Response.json({ answer });
+      }
+      attempts.push({ model: candidate.model, message: `empty answer (finishReason: ${result.response.candidates?.[0]?.finishReason ?? "unknown"})` });
     } catch (error) {
       const status = statusOf(error);
       const message = String((error as Error | null)?.message ?? error).slice(0, 400);
-      attempts.push({ model: modelName, status, message });
+      attempts.push({ model: candidate.model, status, message });
       console.log(error);
-      console.error(`[chef] Gemini request failed (model ${modelName}, status ${status ?? "none"}):`, message);
-      // Only a passing problem (overloaded 429/5xx, slow) is worth one more try; a bad key, a missing
-      // model (404) or a rejected request (400) will fail the same way again.
-      if (isKeyProblem(status, message) || status === 404 || status === 400) break;
+      console.error(`[chef] Gemini request failed (model ${candidate.model}, ${candidate.apiVersion}, status ${status ?? "none"}):`, message);
+      // A bad key won't improve with another model: stop. Anything else moves on to the next candidate.
+      if (isKeyProblem(status, message)) break;
+      // "Model not found / no longer available": ask Google which flash models this key can use
+      // (once per request) and queue them after the ones already tried.
+      if (status === 404 && !listed) {
+        listed = true;
+        const discovered = await listFlashCandidates(apiKey, Math.max(1000, Math.min(3000, DEADLINE_MS - (Date.now() - started) - 1000)));
+        const tried = new Set(queue.slice(0, index + 1).map((entry) => entry.model));
+        queue.push(...discovered.filter((entry) => !tried.has(entry.model)));
+        console.log("[chef] flash models offered by this key:", discovered.map((entry) => entry.model).join(", ") || "(none)");
+      }
     }
   }
 

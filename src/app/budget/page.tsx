@@ -1,19 +1,29 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, ExternalLink, Pencil, Plus, Search, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ExternalLink, FileUp, Pencil, Plus, Search, X, Zap } from "lucide-react";
 import type { PostgrestError } from "@supabase/supabase-js";
 import PageHeader from "@/components/PageHeader";
 import ErrorBanner from "@/components/ErrorBanner";
 import { SkeletonList } from "@/components/Skeleton";
 import BudgetKindSection, { type CategoryPatch } from "@/components/BudgetKindSection";
 import BudgetSetupBanner from "@/components/BudgetSetupBanner";
+import MonthlyAnalytics from "@/components/MonthlyAnalytics";
+import QuickTapModal from "@/components/QuickTapModal";
+import ImportTransactionsPanel from "@/components/ImportTransactionsPanel";
 import CategoryMultiSelect from "@/components/CategoryMultiSelect";
 import SetupSqlButton from "@/components/SetupSqlButton";
 import ExpenseFormModal from "@/components/ExpenseFormModal";
 import StoreMappingsPanel from "@/components/StoreMappingsPanel";
 import { useBudgetData } from "@/lib/useBudget";
-import { createBudgetCategory, deleteMerchant, saveExpense, updateMerchant, upsertMerchant } from "@/lib/budgetActions";
+import {
+  createBudgetCategory,
+  deleteMerchant,
+  saveExpense,
+  saveQuickExpense,
+  updateMerchant,
+  upsertMerchant,
+} from "@/lib/budgetActions";
 import { useOptimisticRows } from "@/lib/useOptimisticRows";
 import { supabase } from "@/lib/supabaseClient";
 import { friendlyErrorMessage, logSupabaseError } from "@/lib/supabaseErrors";
@@ -66,6 +76,9 @@ export default function BudgetPage() {
   const [formCategoryId, setFormCategoryId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
+  const [showQuick, setShowQuick] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const monthKey = monthKeyFromOffset(monthOffset);
   const summary = useMemo(
@@ -181,6 +194,25 @@ export default function BudgetPage() {
     await refetchExpenses();
     setShowForm(false);
     setEditingExpense(null);
+  }
+
+  // The 3-second flow: shop + amount, dated today. Returns an error message, or null when saved.
+  async function handleQuickSave(vendor: string, amount: number): Promise<string | null> {
+    const { error, mappingSaved } = await saveQuickExpense({ vendor, amount, categories: categories.rows, merchants });
+    if (error) return friendlyErrorMessage(error);
+    if (mappingSaved) refetchMerchants();
+    setMonthOffset(0);
+    await refetchExpenses();
+    setNotice(`נוספו ${formatCurrency(amount)} ב${vendor}`);
+    return null;
+  }
+
+  async function handleImported(result: { inserted: number; learned: number; latestDate: string | null }) {
+    setShowImport(false);
+    if (result.learned > 0) refetchMerchants();
+    if (result.latestDate) setMonthOffset(monthOffsetFromDate(result.latestDate));
+    await refetchExpenses();
+    setNotice(`יובאו ${result.inserted} תנועות${result.learned > 0 ? ` · נלמדו ${result.learned} חנויות חדשות` : ""}`);
   }
 
   // A custom income source ("משכורת אורית", "הכנסה חד פעמית") created from the form's income mode.
@@ -426,6 +458,18 @@ export default function BudgetPage() {
 
       <div className="flex flex-col gap-4 p-4 pb-28">
         {pageError && <ErrorBanner message={pageError} onDismiss={() => setPageError(null)} />}
+        {notice && (
+          <div
+            role="status"
+            className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-400"
+          >
+            <Check className="mt-0.5 h-4 w-4 shrink-0" />
+            <span className="flex-1">{notice}</span>
+            <button type="button" onClick={() => setNotice(null)} aria-label="סגירה" className="shrink-0 rounded-full p-0.5 hover:bg-emerald-100 dark:hover:bg-emerald-900/40">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
         {showFavoritesSql && <SetupSqlButton />}
         <BudgetSetupBanner setup={setup} />
 
@@ -499,6 +543,26 @@ export default function BudgetPage() {
           </div>
         </div>
 
+        {/* Faster ways in: the 3-second quick tap, and a statement / pasted-SMS import */}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setShowQuick(true)}
+            className="flex min-h-12 items-center justify-center gap-1.5 rounded-xl bg-amber-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition active:scale-95 hover:bg-amber-600"
+          >
+            <Zap className="h-4 w-4" />
+            הוצאה מהירה
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowImport(true)}
+            className="flex min-h-12 items-center justify-center gap-1.5 rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm font-semibold text-amber-700 transition active:scale-95 hover:bg-amber-50 dark:border-amber-800 dark:bg-stone-900 dark:text-amber-400 dark:hover:bg-stone-800"
+          >
+            <FileUp className="h-4 w-4" />
+            ייבוא תנועות
+          </button>
+        </div>
+
         {/* Budget by category */}
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-bold text-stone-700 dark:text-stone-200">תקציב</h2>
@@ -553,6 +617,10 @@ export default function BudgetPage() {
               {formatCurrency(summary.uncategorizedSpent)}
             </span>
           </div>
+        )}
+
+        {categories.rows.length > 0 && (
+          <MonthlyAnalytics categories={categories.rows} expenses={expenses} monthKey={monthKey} overrides={overrides} />
         )}
 
         <StoreMappingsPanel
@@ -757,6 +825,30 @@ export default function BudgetPage() {
         <Plus className="h-4 w-4" />
         הוצאה
       </button>
+
+      {showQuick && (
+        <QuickTapModal
+          categories={categories.rows}
+          merchants={merchants}
+          expenses={expenses}
+          onClose={() => setShowQuick(false)}
+          onOther={() => {
+            setShowQuick(false);
+            openNewExpense();
+          }}
+          onSave={handleQuickSave}
+        />
+      )}
+
+      {showImport && (
+        <ImportTransactionsPanel
+          categories={categories.rows}
+          merchants={merchants}
+          expenses={expenses}
+          onClose={() => setShowImport(false)}
+          onImported={handleImported}
+        />
+      )}
 
       {showForm && (
         <ExpenseFormModal
