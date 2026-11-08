@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowRight, ChefHat, Minus, Pencil, Plus, Share2, ShoppingCart, Sparkles, Star, Trash2, TriangleAlert, Users } from "lucide-react";
+import { ArrowRight, ChefHat, Loader2, Minus, Pencil, Plus, Share2, ShoppingCart, Sparkles, Star, Trash2, TriangleAlert, Users } from "lucide-react";
 import { SkeletonBlock } from "@/components/Skeleton";
 import ChefAssistant from "@/components/ChefAssistant";
 import HomeButton from "@/components/HomeButton";
@@ -51,6 +51,24 @@ export default function RecipePage() {
   // A new recipe created from a chef answer ("save as a new recipe").
   const [chefDraft, setChefDraft] = useState<{ draft: RecipeDraft; review: ReviewItem[] } | null>(null);
   const [chefDraftError, setChefDraftError] = useState<string | null>(null);
+  // The purple button's feedback: a spinner while it "calculates", a toast when there is nothing to adjust.
+  const [smartBusy, setSmartBusy] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timeout = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(timeout);
+  }, [toast]);
+
+  useEffect(() => {
+    if (!smartBusy) return;
+    const timeout = setTimeout(() => {
+      setSmart(true);
+      setSmartBusy(false);
+    }, 450);
+    return () => clearTimeout(timeout);
+  }, [smartBusy]);
 
   useEffect(() => {
     if (!confirmingDelete) return;
@@ -94,6 +112,21 @@ export default function RecipePage() {
     tips: recipe.tips,
     source_url: recipe.source_url,
   });
+
+  function handleSmartClick() {
+    if (smartBusy) return;
+    if (smart) {
+      setSmart(false); // turning it off needs no input
+      return;
+    }
+    // Nothing to adjust yet: no new number of portions and no key ingredient amount.
+    if (factor === 1) {
+      setToast("אנא הזינו מספר מנות או כמות רכיב להתאמה");
+      return;
+    }
+    setToast(null);
+    setSmartBusy(true);
+  }
 
   function applyBaseIngredient() {
     const entry = amountLines.find((candidate) => candidate.index === baseIndex) ?? amountLines[0];
@@ -320,13 +353,14 @@ export default function RecipePage() {
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => setSmart((value) => !value)}
+                onClick={handleSmartClick}
                 aria-pressed={smart}
+                aria-busy={smartBusy}
                 title="תבלינים, מלח, נוזלים ושמן מוגדלים או מוקטנים בקצב מתון יותר מהבשר, הביצים והבצל"
-                className={"flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition-colors " + (smart ? "border-violet-500 bg-violet-500 text-white" : "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900/50 dark:bg-violet-950/30 dark:text-violet-300")}
+                className={"flex min-h-[40px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition-colors " + (smart || smartBusy ? "border-violet-500 bg-violet-500 text-white" : "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-900/50 dark:bg-violet-950/30 dark:text-violet-300")}
               >
-                <Sparkles className="h-3.5 w-3.5" />
-                התאם כמויות חכם
+                {smartBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                {smartBusy ? "מחשב..." : "התאם כמויות חכם"}
               </button>
               {amountLines.length > 0 && (
                 <button
@@ -469,6 +503,15 @@ export default function RecipePage() {
           </p>
         )}
       </div>
+
+      {toast && (
+        <div
+          role="alert"
+          className="fixed inset-x-4 bottom-[calc(9rem+env(safe-area-inset-bottom))] z-[70] mx-auto max-w-sm rounded-xl bg-stone-800 px-4 py-3 text-center text-sm font-medium text-white shadow-lg dark:bg-violet-600"
+        >
+          {toast}
+        </div>
+      )}
 
       <ChefAssistant
         recipe={recipe}
