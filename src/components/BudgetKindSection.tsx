@@ -253,17 +253,26 @@ function CategoryRow({
         type="button"
         onClick={() => setEditingBudget((value) => !value)}
         aria-label={`הגדרת יעד חודשי ל${category.name}`}
-        title="יעד חודשי"
-        className={`mt-1.5 shrink-0 rounded-full p-1 transition-colors ${
-          budget > 0 ? "text-stone-300 hover:bg-amber-100 hover:text-amber-600 dark:text-stone-600" : "bg-amber-50 text-amber-600 dark:bg-amber-950/30 dark:text-amber-400"
+        aria-expanded={editingBudget}
+        title={budget > 0 ? "שינוי היעד החודשי" : "הגדרת יעד חודשי"}
+        className={`mt-1.5 flex shrink-0 items-center gap-1 rounded-full p-1 transition-colors ${
+          editingBudget
+            ? "bg-amber-500 text-white"
+            : budget > 0
+              ? "bg-amber-50 text-amber-600 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-400"
+              : "bg-amber-100 px-2 text-amber-700 hover:bg-amber-200 dark:bg-amber-950/50 dark:text-amber-300"
         }`}
       >
         <Target className="h-4 w-4" />
+        {budget <= 0 && !editingBudget && <span className="text-[11px] font-semibold">יעד</span>}
       </button>
       <span className="mt-1.5">{addButton}</span>
       {editingBudget && (
-        <div className="flex w-full items-center gap-2 px-2 pb-1.5">
-          <span className="text-xs text-stone-500 dark:text-stone-400">יעד חודשי:</span>
+        <div role="group" aria-label={`יעד חודשי ל${category.name}`} className="mx-2 mb-1.5 flex w-[calc(100%-1rem)] flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900/50 dark:bg-amber-950/20">
+          <span className="flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-300">
+            <Target className="h-3.5 w-3.5" />
+            יעד חודשי ל{category.name}:
+          </span>
           <span className="relative">
             <input
               type="number"

@@ -837,6 +837,7 @@ export default function BudgetPage() {
             openNewExpense();
           }}
           onSave={handleQuickSave}
+          onMerchantsChanged={refetchMerchants}
         />
       )}
 

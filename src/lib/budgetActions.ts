@@ -195,6 +195,46 @@ export async function upsertMerchant(storeName: string, categoryId: string) {
   );
 }
 
+/**
+ * Adds a store to the quick-add grid (or re-files it): remembers store -> category and stars it as a
+ * "common store". Before migration 0019 there is no star column, so it falls back to the plain mapping.
+ */
+export async function saveQuickStore(storeName: string, categoryId: string) {
+  const name = storeName.trim();
+  const result = await supabase.from("merchant_categories").upsert(
+    {
+      store_key: normalizeStoreKey(name),
+      store_name: name,
+      category_id: categoryId,
+      is_favorite: true,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "store_key" }
+  );
+  if (result.error && /is_favorite/i.test(result.error.message)) return upsertMerchant(name, categoryId);
+  return result;
+}
+
+// The shops the family removed from the quick-add grid: shared across devices in app_settings.
+const QUICK_HIDDEN_SETTING = "quick_add_hidden";
+
+export async function loadQuickHidden(): Promise<string[] | null> {
+  const { data, error } = await supabase.from("app_settings").select("value").eq("key", QUICK_HIDDEN_SETTING).maybeSingle();
+  if (error) return null;
+  try {
+    const parsed: unknown = data?.value ? JSON.parse(data.value) : [];
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveQuickHidden(keys: string[]) {
+  return supabase
+    .from("app_settings")
+    .upsert({ key: QUICK_HIDDEN_SETTING, value: JSON.stringify(keys), updated_at: new Date().toISOString() });
+}
+
 export async function updateMerchant(
   id: string,
   patch: { store_name?: string; category_id?: string; is_favorite?: boolean }

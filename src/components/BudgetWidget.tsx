@@ -165,6 +165,7 @@ export default function BudgetWidget() {
             setShowForm(true);
           }}
           onSave={handleQuickSave}
+          onMerchantsChanged={merchants.refetch}
         />
       )}
 

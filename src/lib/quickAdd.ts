@@ -42,19 +42,21 @@ export function resolveQuickCategory(
 /**
  * The shops for the quick-tap grid: starred stores first, then the ones used most in the last three
  * months, then the defaults to fill the grid. Purchases in `skipCategoryIds` (income, recurring bills,
- * savings) don't count: this grid is for everyday spending.
+ * savings) don't count: this grid is for everyday spending. `hidden` holds the (normalized) names the
+ * family removed from the grid with "ניהול חנויות".
  */
 export function quickVendors(
   expenses: BudgetExpense[],
   merchants: MerchantCategory[],
   skipCategoryIds: Set<string>,
+  hidden: ReadonlySet<string> = new Set(),
   limit = 8,
   today: Date = new Date()
 ): string[] {
   const names = new Map<string, string>(); // normalized key -> display name, in priority order
   const add = (name: string) => {
     const key = normalizeStoreKey(name);
-    if (key && !names.has(key)) names.set(key, name.trim());
+    if (key && !hidden.has(key) && !names.has(key)) names.set(key, name.trim());
   };
 
   for (const merchant of merchants) if (merchant.is_favorite) add(merchant.store_name);

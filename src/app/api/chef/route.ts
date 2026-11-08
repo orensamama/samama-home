@@ -20,9 +20,10 @@ const MAX_OUTPUT_TOKENS = 500;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 
-// One model, on the stable v1 endpoint: gemini-1.5-flash unless GEMINI_MODEL says otherwise (if Google
-// ever retires it, set GEMINI_MODEL in Vercel -- no code change needed).
-const DEFAULT_MODEL = "gemini-1.5-flash";
+// One fixed model on the stable v1 endpoint. The GEMINI_MODEL environment variable is deliberately NOT
+// read: a stale value left in the project settings (an old or unsupported model) must never decide
+// which model the chef calls. To change the model, change this constant.
+const MODEL = "gemini-1.5-flash";
 const TIMEOUT_MS = 8000;
 
 /** HTTP status of a Gemini SDK error ("[404 Not Found] ..." when the status field isn't set). */
@@ -124,7 +125,7 @@ async function handle(request: Request): Promise<Response> {
     parts: [{ text: index === 0 ? `${instructions}\n\nשאלה: ${turn.content}` : turn.content }],
   }));
 
-  const modelName = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  const modelName = MODEL;
   try {
     const model = new GoogleGenerativeAI(apiKey).getGenerativeModel(
       { model: modelName, generationConfig: { maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.5 } },
