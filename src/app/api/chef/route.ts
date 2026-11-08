@@ -9,7 +9,9 @@ import { rankFlashModels, type ListedModel } from "@/lib/geminiModels";
 // a short history, a bounded recipe, and a per-visitor rate limit -- enough to stop a
 // stray script from running up the bill, not a substitute for real authentication.
 
-export const maxDuration = 15;
+// Vercel cuts a function off at maxDuration; the default is short, so ask for 30s. The deadline below
+// (27s) stays under it, so the route always answers with JSON before Vercel would kill it.
+export const maxDuration = 30;
 
 const MAX_QUESTION_CHARS = 600;
 const MAX_HISTORY = 8;
@@ -23,8 +25,8 @@ const MAX_REQUESTS_PER_WINDOW = 20;
 // that works is remembered for later requests. The whole request has one deadline: it can never
 // hang, it always ends with an answer or a JSON error.
 const DEFAULT_MODEL = "gemini-1.5-flash";
-const PER_ATTEMPT_MS = 6000;
-const DEADLINE_MS = 12000;
+const PER_ATTEMPT_MS = 15000; // one model call: aborted after 15s so it can't hang until Vercel cuts us off
+const DEADLINE_MS = 27000;
 const MAX_ATTEMPTS = 5;
 const WORKING_TTL_MS = 60 * 60 * 1000;
 
@@ -197,7 +199,12 @@ async function handle(request: Request): Promise<Response> {
         { timeout: remaining, apiVersion: candidate.apiVersion }
       );
       // Belt and braces: even if the SDK's own timeout didn't fire, never wait past the deadline.
-      const result = await withTimeout(model.generateContent({ contents }), remaining, `timeout after ${Math.round(remaining / 1000)}s`);
+      // The AbortSignal also cancels the HTTP request itself when the time is up.
+      const result = await withTimeout(
+        model.generateContent({ contents }, { signal: AbortSignal.timeout(remaining) }),
+        remaining,
+        `timeout after ${Math.round(remaining / 1000)}s`
+      );
       const blocked = result.response.promptFeedback?.blockReason;
       if (blocked) return Response.json({ answer: "מצטער, לא אוכל לענות על זה. אפשר לנסות לנסח את השאלה אחרת." });
       let answer = "";

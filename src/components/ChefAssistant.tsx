@@ -5,7 +5,8 @@ import { BookmarkPlus, ChefHat, Send, X } from "lucide-react";
 import { chefSuggestions } from "@/lib/chefSuggestions";
 import type { Recipe } from "@/lib/recipeData";
 
-const CLIENT_TIMEOUT_MS = 14000;
+// Just above the server's own 27s deadline, so the server's JSON answer (with its reason) arrives first.
+const CLIENT_TIMEOUT_MS = 29000;
 
 type Turn = { role: "user" | "assistant"; content: string };
 
