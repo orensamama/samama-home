@@ -76,14 +76,18 @@ export async function saveExpense(params: {
   return { error: null, mappingSaved, flowSkipped };
 }
 
-/** The quick-tap flow: a shop and an amount, dated today, filed under the category the shop points to. */
+/**
+ * The quick-tap flow: a shop and an amount, dated today, filed under the category the shop points to.
+ * The optional `note` ("קישוטים") is saved in the transaction's notes.
+ */
 export async function saveQuickExpense(params: {
   vendor: string;
   amount: number;
+  note?: string;
   categories: BudgetCategory[];
   merchants: MerchantCategory[];
 }) {
-  const { vendor, amount, categories, merchants } = params;
+  const { vendor, amount, note = "", categories, merchants } = params;
   const category = resolveQuickCategory(vendor, merchants, categories);
   return saveExpense({
     values: {
@@ -92,7 +96,7 @@ export async function saveQuickExpense(params: {
       store: vendor,
       category_id: category?.id ?? "",
       date: defaultDateForMonth(monthKeyFromOffset(0)),
-      notes: "",
+      notes: note,
       receipt_url: "",
       flow: defaultFlowFor(category?.kind),
       remember_mapping: false,

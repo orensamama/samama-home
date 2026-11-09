@@ -10,6 +10,7 @@ import BudgetKindSection, { type CategoryPatch } from "@/components/BudgetKindSe
 import BudgetSetupBanner from "@/components/BudgetSetupBanner";
 import MonthlyAnalytics from "@/components/MonthlyAnalytics";
 import QuickTapModal from "@/components/QuickTapModal";
+import TransactionActions from "@/components/TransactionActions";
 import ImportTransactionsPanel from "@/components/ImportTransactionsPanel";
 import CategoryMultiSelect from "@/components/CategoryMultiSelect";
 import SetupSqlButton from "@/components/SetupSqlButton";
@@ -197,8 +198,8 @@ export default function BudgetPage() {
   }
 
   // The 3-second flow: shop + amount, dated today. Returns an error message, or null when saved.
-  async function handleQuickSave(vendor: string, amount: number): Promise<string | null> {
-    const { error, mappingSaved } = await saveQuickExpense({ vendor, amount, categories: categories.rows, merchants });
+  async function handleQuickSave(vendor: string, amount: number, note: string): Promise<string | null> {
+    const { error, mappingSaved } = await saveQuickExpense({ vendor, amount, note, categories: categories.rows, merchants });
     if (error) return friendlyErrorMessage(error);
     if (mappingSaved) refetchMerchants();
     setMonthOffset(0);
@@ -238,6 +239,19 @@ export default function BudgetPage() {
     await refetchExpenses();
     setShowForm(false);
     setEditingExpense(null);
+  }
+
+  // Delete straight from the transactions list (the row's trash button asks for a second tap first).
+  async function handleQuickDeleteExpense(id: string) {
+    setPageError(null);
+    const { error } = await supabase.from("expenses").delete().eq("id", id);
+    if (error) {
+      logSupabaseError("מחיקת הוצאה", error);
+      setPageError(friendlyErrorMessage(error));
+      return;
+    }
+    await refetchExpenses();
+    setNotice("התנועה נמחקה");
   }
 
   // --- categories (every amount, name, group is editable) -----------------
@@ -748,11 +762,11 @@ export default function BudgetPage() {
                 const category = expense.category_id ? categoryById.get(expense.category_id) : null;
                 const isIncome = category?.kind === "income";
                 return (
-                  <li key={expense.id}>
+                  <li key={expense.id} className="flex items-center">
                     <button
                       type="button"
                       onClick={() => openEditExpense(expense)}
-                      className="flex w-full items-center gap-3 px-4 py-2.5 text-right transition-colors hover:bg-amber-50/60 dark:hover:bg-stone-800/60"
+                      className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pe-2 ps-4 text-right transition-colors hover:bg-amber-50/60 dark:hover:bg-stone-800/60"
                     >
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm text-stone-800 dark:text-stone-100">
@@ -766,6 +780,11 @@ export default function BudgetPage() {
                             </span>
                           )}
                         </span>
+                        {expense.notes?.trim() && (
+                          <span className="block truncate text-[11px] italic text-stone-500 dark:text-stone-400">
+                            {expense.notes.trim().split("\n")[0]}
+                          </span>
+                        )}
                       </span>
                       {expense.receipt_url && (
                         <ExternalLink className="h-3.5 w-3.5 shrink-0 text-stone-300" aria-label="יש קבלה" />
@@ -785,6 +804,11 @@ export default function BudgetPage() {
                         </span>
                       )}
                     </button>
+                    <TransactionActions
+                      name={expense.store || expense.title}
+                      onEdit={() => openEditExpense(expense)}
+                      onDelete={() => handleQuickDeleteExpense(expense.id)}
+                    />
                   </li>
                 );
               })}

@@ -62,8 +62,8 @@ export default function BudgetWidget() {
     setShowForm(false);
   }
 
-  async function handleQuickSave(vendor: string, amount: number): Promise<string | null> {
-    const { error, mappingSaved } = await saveQuickExpense({ vendor, amount, categories: categories.rows, merchants: merchants.rows });
+  async function handleQuickSave(vendor: string, amount: number, note: string): Promise<string | null> {
+    const { error, mappingSaved } = await saveQuickExpense({ vendor, amount, note, categories: categories.rows, merchants: merchants.rows });
     if (error) return friendlyErrorMessage(error);
     if (mappingSaved) merchants.refetch();
     await expenses.refetch();

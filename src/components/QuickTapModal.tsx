@@ -121,12 +121,13 @@ export default function QuickTapModal({
   /** "אחר": open the full expense form instead */
   onOther: () => void;
   /** Saves the purchase; returns an error message, or null when it worked. */
-  onSave: (vendor: string, amount: number) => Promise<string | null>;
+  onSave: (vendor: string, amount: number, note: string) => Promise<string | null>;
   /** The shop list was edited: reload the remembered shops. */
   onMerchantsChanged: () => void | Promise<unknown>;
 }) {
   const [vendor, setVendor] = useState<string | null>(null);
   const [digits, setDigits] = useState("");
+  const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -156,7 +157,7 @@ export default function QuickTapModal({
     if (!vendor || !valid || saving) return;
     setSaving(true);
     setError(null);
-    const failure = await onSave(vendor, amount);
+    const failure = await onSave(vendor, amount, note.trim());
     setSaving(false);
     if (failure) {
       setError(failure);
@@ -345,10 +346,20 @@ export default function QuickTapModal({
                   ₪{digits === "" ? "0" : digits}
                 </p>
               </div>
-              <button type="button" onClick={() => { setVendor(null); setDigits(""); setError(null); }} className="pb-1 text-xs font-medium text-stone-500 underline">
+              <button type="button" onClick={() => { setVendor(null); setDigits(""); setNote(""); setError(null); }} className="pb-1 text-xs font-medium text-stone-500 underline">
                 החלפת חנות
               </button>
             </div>
+
+            <input
+              type="text"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              maxLength={120}
+              placeholder="הערה (אופציונלי)..."
+              aria-label="הערה להוצאה"
+              className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm text-stone-700 outline-none focus:border-amber-400 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-200"
+            />
 
             {error && <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/30 dark:text-rose-400">{error}</p>}
 
