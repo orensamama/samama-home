@@ -1,13 +1,16 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { rankChatModels, type ListedModel } from "@/lib/geminiModels";
 
 // "Ask the Chef": answers cooking questions (about ONE recipe, or free-standing) with Google Gemini
 // (free tier). The API key stays on the server (GEMINI_API_KEY in the Vercel project settings) and
 // never reaches the browser.
 //
 // Built to be FAST: a short prompt and a short answer, and a hard time cap -- when Gemini doesn't
-// answer in time the visitor gets a short error, not a hang. Only the official SDK is used (no
-// hand-made REST calls), and no model discovery: a fixed, short list of models, tried in order
-// ONLY when Google answers 404 (model retired / not found); the one that works is remembered.
+// answer in time the visitor gets a short error, not a hang. Generation goes through the official SDK.
+// The model is gemini-2.5-flash-lite. If Google answers 404 ("no longer available to new users", model
+// not found) the chef asks Google's ListModels which models THIS key can use (the SDK has no
+// ListModels call, so it is one small authenticated REST GET) and tries those that support
+// generateContent. The model that worked is remembered, so ListModels isn't called on every request.
 //
 // This route has no sign-in, like the rest of the app, so it is limited: short questions,
 // a short history, a bounded recipe, and a per-visitor rate limit -- enough to stop a
@@ -22,18 +25,39 @@ const MAX_OUTPUT_TOKENS = 500;
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 
-// The first model is always gemini-1.5-flash. The GEMINI_MODEL environment variable is deliberately NOT
-// read: a stale value left in the project settings must never decide which model the chef calls.
-// A 404 from Google means "this model is gone for your key" (the whole 1.5 family has been retired by
-// Google), so the next one in the list is tried; 404s come back in well under a second, so the chain
-// costs almost nothing. The requested fallbacks come first, then current light models.
-const MODELS = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+// The only hard-coded model. No gemini-1.5-* and no gemini-2.5-flash: Google has retired or closed them
+// to new users. The GEMINI_MODEL environment variable is deliberately NOT read: a stale value left in
+// the project settings must never decide which model the chef calls.
+const PRIMARY_MODEL = "gemini-2.5-flash-lite";
 const TIMEOUT_MS = 8000; // one model call
-const DEADLINE_MS = 10000; // the whole request, 404 hops included
+const DEADLINE_MS = 12000; // the whole request: 404 hops and ListModels included
+const LIST_TIMEOUT_MS = 3000;
+const MAX_ATTEMPTS = 4;
 const WORKING_TTL_MS = 60 * 60 * 1000;
+const LIST_TTL_MS = 10 * 60 * 1000;
 
-// The model that last answered: later requests go straight to it instead of hopping over 404s again.
+// The model that last answered: later requests go straight to it, with no ListModels.
 let working: { at: number; model: string } | null = null;
+let listed: { at: number; models: string[] } | null = null;
+
+/** The models this key may use (generateContent only), best first. Cached for a few minutes. */
+async function listUsableModels(apiKey: string, timeoutMs: number): Promise<string[]> {
+  if (listed && Date.now() - listed.at < LIST_TTL_MS) return listed.models;
+  try {
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {
+      headers: { "x-goog-api-key": apiKey },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) throw new Error(`ListModels ${response.status}`);
+    const data = (await response.json()) as { models?: ListedModel[] };
+    const models = rankChatModels(data.models ?? []);
+    if (models.length > 0) listed = { at: Date.now(), models };
+    return models;
+  } catch (error) {
+    console.error("[chef] could not list Gemini models:", error);
+    return [];
+  }
+}
 
 /** HTTP status of a Gemini SDK error ("[404 Not Found] ..." when the status field isn't set). */
 function statusOf(error: unknown): number | undefined {
@@ -136,13 +160,18 @@ async function handle(request: Request): Promise<Response> {
 
   const genAI = new GoogleGenerativeAI(apiKey);
   const started = Date.now();
-  // The remembered working model goes first; then the fixed list, in order.
-  const order = working && Date.now() - working.at < WORKING_TTL_MS ? [working.model, ...MODELS.filter((name) => name !== working!.model)] : MODELS;
+  // The remembered working model goes first, then the primary one. Models found with ListModels are
+  // appended to the queue if (and only if) one of these answers 404.
+  const queue: string[] = [];
+  if (working && Date.now() - working.at < WORKING_TTL_MS) queue.push(working.model);
+  if (!queue.includes(PRIMARY_MODEL)) queue.push(PRIMARY_MODEL);
+  let discovered = false;
   let lastDetail = "";
   let lastStatus: number | undefined;
   let lastMessage = "";
 
-  for (const modelName of order) {
+  for (let index = 0; index < queue.length && index < MAX_ATTEMPTS; index++) {
+    const modelName = queue[index];
     const remaining = Math.min(TIMEOUT_MS, DEADLINE_MS - (Date.now() - started));
     if (remaining < 1000) break;
     try {
@@ -173,10 +202,18 @@ async function handle(request: Request): Promise<Response> {
       lastMessage = String((error as Error | null)?.message ?? error).slice(0, 400);
       lastDetail = `${modelName}: ${lastStatus ? `[${lastStatus}] ` : ""}${lastMessage}`.slice(0, 400);
       console.error(`[chef] Gemini request failed (model ${modelName}, status ${lastStatus ?? "none"}):`, lastMessage);
-      // Only "model not found" moves on to the next model; a timeout, a bad key or a busy service would
-      // fail the same way with any of them.
+      // Only "model not found / no longer available" moves on to another model; a timeout, a bad key or
+      // a busy service would fail the same way with any of them.
       if (lastStatus !== 404) break;
       if (working?.model === modelName) working = null;
+      if (listed?.models.includes(modelName)) listed = null; // the list was wrong about this one
+      if (!discovered) {
+        discovered = true;
+        const budget = Math.max(500, Math.min(LIST_TIMEOUT_MS, DEADLINE_MS - (Date.now() - started) - 1000));
+        const usable = await listUsableModels(apiKey, budget);
+        for (const name of usable) if (!queue.includes(name)) queue.push(name);
+        console.log("[chef] models this key can use (best first):", usable.join(", ") || "(none)");
+      }
     }
   }
 
@@ -185,7 +222,7 @@ async function handle(request: Request): Promise<Response> {
   if (isKeyProblem(lastStatus, lastMessage)) return Response.json({ error: "bad_key", detail: lastDetail }, { status: 502 });
   if (lastStatus === 429) return Response.json({ error: "busy", detail: lastDetail }, { status: 429 });
   if (lastStatus === 404) {
-    return Response.json({ error: "failed", detail: `אף אחד מהמודלים לא זמין למפתח הזה. ${lastDetail}`.slice(0, 400) }, { status: 502 });
+    return Response.json({ error: "failed", detail: `אין מודל זמין למפתח הזה (נוסו עד ${MAX_ATTEMPTS}). ${lastDetail}`.slice(0, 400) }, { status: 502 });
   }
   return Response.json({ error: "failed", detail: lastDetail }, { status: 502 });
 }
